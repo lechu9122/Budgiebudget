@@ -39,3 +39,31 @@
 
 # debug information files
 *.dwo
+
+# Node / frontend dependencies
+node_modules/
+frontend/node_modules/
+
+# Build output
+build/
+dist/
+frontend/build/
+frontend/dist/
+backend/build/
+
+# Environment variables – never commit secrets
+.env
+.env.local
+.env.*.local
+
+# SQLite database files
+*.sqlite
+*.sqlite3
+*.db
+
+# macOS metadata
+.DS_Store
+
+# Editor directories
+.vscode/
+.idea/
