@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { login, register } from '../services/api';
 
 interface LoginProps {
-  onLogin: (token: string) => void;
+  onLogin: (token: string, userId: string, isNewAccount: boolean) => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
@@ -18,8 +18,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     setLoading(true);
     try {
       const fn = mode === 'login' ? login : register;
-      const { token } = await fn({ username, password });
-      onLogin(token);
+      const { token, user } = await fn({ username, password });
+      onLogin(token, user.id, mode === 'register');
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);
@@ -31,57 +31,136 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     }
   };
 
+  const toggleMode = () => {
+    setMode(mode === 'login' ? 'register' : 'login');
+    setError(null);
+    setUsername('');
+    setPassword('');
+  };
+
   return (
-    <div style={{ maxWidth: 400, margin: '80px auto', fontFamily: 'sans-serif' }}>
-      <h1>🦜 BudgieBudget</h1>
-      <h2>{mode === 'login' ? 'Sign In' : 'Create Account'}</h2>
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: 12 }}>
-          <label htmlFor="username">Username</label>
-          <br />
-          <input
-            id="username"
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-            style={{ width: '100%', padding: 8, marginTop: 4 }}
-          />
+    <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-primary-100 flex items-center justify-center px-4 py-12">
+      <div className="w-full max-w-md">
+        {/* Logo and Title */}
+        <div className="text-center mb-8 animate-fade-in">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4 shadow-lg">
+            <span className="text-4xl">🦜</span>
+          </div>
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">BudgieBudget</h1>
+          <p className="text-gray-600">Your personal budget companion</p>
         </div>
-        <div style={{ marginBottom: 12 }}>
-          <label htmlFor="password">Password</label>
-          <br />
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            style={{ width: '100%', padding: 8, marginTop: 4 }}
-          />
+
+        {/* Login/Register Card */}
+        <div className="card animate-slide-in">
+          <h2 className="text-2xl font-bold text-gray-900 mb-6">
+            {mode === 'login' ? 'Welcome Back' : 'Create Account'}
+          </h2>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* Username Field */}
+            <div>
+              <label htmlFor="username" className="label">
+                Username
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+                <input
+                  id="username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  className="input pl-10"
+                  placeholder="Enter your username"
+                  autoComplete="username"
+                />
+              </div>
+            </div>
+
+            {/* Password Field */}
+            <div>
+              <label htmlFor="password" className="label">
+                Password
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  className="input pl-10"
+                  placeholder="Enter your password"
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                />
+              </div>
+              {mode === 'register' && password.length > 0 && password.length < 6 && (
+                <p className="error-text">Password must be at least 6 characters</p>
+              )}
+            </div>
+
+            {/* Error Message */}
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg animate-slide-in">
+                <div className="flex items-center">
+                  <svg className="h-5 w-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                  {error}
+                </div>
+              </div>
+            )}
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={loading}
+              className="btn btn-primary w-full text-lg py-3"
+            >
+              {loading ? (
+                <span className="flex items-center justify-center">
+                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Please wait...
+                </span>
+              ) : (
+                mode === 'login' ? 'Sign In' : 'Create Account'
+              )}
+            </button>
+          </form>
+
+          {/* Toggle Mode */}
+          <div className="mt-6 text-center">
+            <p className="text-gray-600">
+              {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
+              <button
+                type="button"
+                onClick={toggleMode}
+                className="text-primary-600 font-semibold hover:text-primary-700 focus:outline-none focus:underline transition-colors"
+              >
+                {mode === 'login' ? 'Create one' : 'Sign in'}
+              </button>
+            </p>
+          </div>
         </div>
-        {error && <p style={{ color: 'red' }}>{error}</p>}
-        <button type="submit" disabled={loading} style={{ padding: '8px 16px' }}>
-          {loading ? 'Please wait…' : mode === 'login' ? 'Sign In' : 'Register'}
-        </button>
-      </form>
-      <p style={{ marginTop: 16 }}>
-        {mode === 'login' ? (
-          <>
-            No account?{' '}
-            <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'blue' }} onClick={() => setMode('register')}>
-              Register
-            </button>
-          </>
-        ) : (
-          <>
-            Already have an account?{' '}
-            <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'blue' }} onClick={() => setMode('login')}>
-              Sign In
-            </button>
-          </>
-        )}
-      </p>
+
+        {/* Footer */}
+        <p className="text-center text-gray-500 text-sm mt-8">
+          Secure budget tracking with AI-powered insights
+        </p>
+      </div>
     </div>
   );
 };

@@ -1,11 +1,11 @@
 #include "AuthHandler.h"
 #include <nlohmann/json.hpp>
-#include <sqlite3.h>
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
+#include <iostream>
 
 using json = nlohmann::json;
 
@@ -58,24 +58,24 @@ std::string hmacSha256(const std::string& key, const std::string& data) {
     return base64UrlEncode(digest, digestLen);
 }
 
-std::string createJwt(long long userId, const std::string& secret) {
+std::string createJwt(const std::string& userId, const std::string& secret) {
     std::string header = base64UrlEncodeStr(R"({"alg":"HS256","typ":"JWT"})");
-    json payloadJson = {{"sub", std::to_string(userId)}, {"iat", std::time(nullptr)}};
+    json payloadJson = {{"sub", userId}, {"iat", std::time(nullptr)}};
     std::string payload = base64UrlEncodeStr(payloadJson.dump());
     std::string signingInput = header + "." + payload;
     std::string sig = hmacSha256(secret, signingInput);
     return signingInput + "." + sig;
 }
 
-// Returns the user_id from the JWT, or -1 on failure.
-long long verifyJwt(const std::string& token, const std::string& secret) {
+// Returns the user_id from the JWT, or nullopt on failure.
+std::optional<std::string> verifyJwt(const std::string& token, const std::string& secret) {
     auto dot1 = token.find('.');
     auto dot2 = token.find('.', dot1 + 1);
-    if (dot1 == std::string::npos || dot2 == std::string::npos) return -1;
+    if (dot1 == std::string::npos || dot2 == std::string::npos) return std::nullopt;
     std::string signingInput = token.substr(0, dot2);
     std::string expectedSig = hmacSha256(secret, signingInput);
     std::string actualSig   = token.substr(dot2 + 1);
-    if (expectedSig != actualSig) return -1;
+    if (expectedSig != actualSig) return std::nullopt;
     // Base64url-decode the payload (simple approach for ASCII JSON)
     std::string payloadB64 = token.substr(dot1 + 1, dot2 - dot1 - 1);
     // Restore padding
@@ -95,7 +95,7 @@ long long verifyJwt(const std::string& token, const std::string& secret) {
         else if (c == '+')             v = 62;
         else if (c == '/')             v = 63;
         else if (c == '=')             break;
-        else return -1;
+        else return std::nullopt;
         val = (val << 6) | static_cast<unsigned int>(v);
         bits += 6;
         if (bits >= 8) {
@@ -106,9 +106,9 @@ long long verifyJwt(const std::string& token, const std::string& secret) {
     std::string payloadStr(decoded.begin(), decoded.end());
     try {
         json p = json::parse(payloadStr);
-        return std::stoll(p.at("sub").get<std::string>());
+        return p.at("sub").get<std::string>();
     } catch (...) {
-        return -1;
+        return std::nullopt;
     }
 }
 
@@ -139,9 +139,90 @@ void sendJson(httplib::Response& res, int status, const json& body) {
 
 long long validateToken(const std::string& authHeader,
                         const std::string& jwtSecret) {
+    auto userUuid = validateTokenUuid(authHeader, jwtSecret);
+    if (!userUuid) return -1;
+    try {
+        return std::stoll(*userUuid);
+    } catch (...) {
+        return -1;
+    }
+}
+
+// 2-arg: verify JWT signature and return raw subject string
+std::optional<std::string> validateTokenUuid(const std::string& authHeader,
+                                             const std::string& jwtSecret) {
     const std::string prefix = "Bearer ";
-    if (authHeader.substr(0, prefix.size()) != prefix) return -1;
+    if (authHeader.size() <= prefix.size() ||
+        authHeader.substr(0, prefix.size()) != prefix) return std::nullopt;
     return verifyJwt(authHeader.substr(prefix.size()), jwtSecret);
+}
+
+namespace {
+bool isUuidFormat(const std::string& s) {
+    if (s.size() != 36) return false;
+    for (size_t i = 0; i < 36; ++i) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (s[i] != '-') return false;
+        } else {
+            char c = s[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+                return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+// 3-arg: verify JWT + resolve subject to a real profiles UUID
+std::optional<std::string> validateTokenUuid(const std::string& authHeader,
+                                             const std::string& jwtSecret,
+                                             Database& db) {
+    auto subject = validateTokenUuid(authHeader, jwtSecret);
+    if (!subject) return std::nullopt;
+
+    // Already a valid UUID — use directly
+    if (isUuidFormat(*subject)) return subject;
+
+    // Legacy numeric subject — resolve via user_subject_map
+    std::cerr << "[AUTH] Non-UUID subject '" << *subject
+              << "', checking user_subject_map...\n";
+    try {
+        auto lock = db.connLock();
+        pqxx::work txn(db.conn());
+        pqxx::result r = txn.exec_params(
+            "SELECT user_id::text FROM user_subject_map WHERE subject::text = $1",
+            *subject
+        );
+        txn.commit();
+        if (!r.empty()) {
+            std::string uuid = r[0][0].as<std::string>();
+            std::cerr << "[AUTH] Resolved subject '" << *subject
+                      << "' to UUID '" << uuid << "'\n";
+            return uuid;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[AUTH] user_subject_map lookup failed: " << e.what() << "\n";
+    }
+
+    std::cerr << "[AUTH] Could not resolve subject '" << *subject
+              << "' to a UUID. Rejecting token.\n";
+    return std::nullopt;
+}
+
+std::optional<std::string> resolveUserUuid(Database& db, long long tokenUserId) {
+    try {
+        auto lock = db.connLock();
+        pqxx::work txn(db.conn());
+        pqxx::result r = txn.exec_params(
+            "SELECT user_id::text FROM user_subject_map WHERE subject = $1",
+            tokenUserId
+        );
+        txn.commit();
+        if (r.empty()) return std::nullopt;
+        return r[0][0].as<std::string>();
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 void registerAuthRoutes(httplib::Server& svr, Database& db,
@@ -164,36 +245,31 @@ void registerAuthRoutes(httplib::Server& svr, Database& db,
 
             std::string pwHash = hashPassword(password);
 
-            // Insert user
-            sqlite3_stmt* stmt = nullptr;
-            const char* sql =
-                "INSERT INTO users (username, email, password_hash) "
-                "VALUES (?, ?, ?);";
-            if (sqlite3_prepare_v2(db.handle(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
-                sendJson(res, 500, {{"error", "DB prepare failed"}});
-                return;
-            }
-            sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, email.c_str(),    -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 3, pwHash.c_str(),   -1, SQLITE_TRANSIENT);
-            int rc = sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
+            // Insert user using pqxx
+            try {
+                auto lock = db.connLock();
+                pqxx::work txn(db.conn());
+                std::string sql = R"(
+                    INSERT INTO profiles (username, email, password_hash)
+                    VALUES ($1, $2, $3)
+                    RETURNING id
+                )";
+                pqxx::result r = txn.exec_params(sql, username, email, pwHash);
+                std::string userId = r[0][0].as<std::string>();
+                txn.commit();
 
-            if (rc == SQLITE_CONSTRAINT) {
+                std::string token = createJwt(userId, jwtSecret);
+                sendJson(res, 201, {
+                    {"token", token},
+                    {"user", {{"id", userId}, {"username", username}, {"email", email}}}
+                });
+            } catch (const pqxx::unique_violation& e) {
                 sendJson(res, 409, {{"error", "Username already taken"}});
                 return;
-            }
-            if (rc != SQLITE_DONE) {
-                sendJson(res, 500, {{"error", "DB insert failed"}});
+            } catch (const std::exception& e) {
+                sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
                 return;
             }
-
-            long long userId = db.lastInsertRowId();
-            std::string token = createJwt(userId, jwtSecret);
-            sendJson(res, 201, {
-                {"token", token},
-                {"user", {{"id", userId}, {"username", username}, {"email", email}}}
-            });
         } catch (const json::exception& e) {
             sendJson(res, 400, {{"error", e.what()}});
         }
@@ -201,39 +277,39 @@ void registerAuthRoutes(httplib::Server& svr, Database& db,
 
     // --- POST /api/auth/login ---
     svr.Post("/api/auth/login", [&db, &jwtSecret](
-                 const httplib::Request& req, httplib::Response& res) {
+                const httplib::Request& req, httplib::Response& res) {
         try {
             auto body = json::parse(req.body);
             std::string username = body.at("username").get<std::string>();
             std::string password = body.at("password").get<std::string>();
             std::string pwHash   = hashPassword(password);
 
-            sqlite3_stmt* stmt = nullptr;
-            const char* sql =
-                "SELECT id, email FROM users WHERE username=? AND password_hash=?;";
-            if (sqlite3_prepare_v2(db.handle(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
-                sendJson(res, 500, {{"error", "DB prepare failed"}});
-                return;
-            }
-            sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, pwHash.c_str(),   -1, SQLITE_TRANSIENT);
+            // Query user using pqxx
+            auto lock = db.connLock();
+            pqxx::work txn(db.conn());
+            std::string sql = R"(
+                SELECT id, email FROM profiles WHERE username=$1 AND password_hash=$2
+            )";
+            pqxx::result r = txn.exec_params(sql, username, pwHash);
 
-            if (sqlite3_step(stmt) == SQLITE_ROW) {
-                long long userId = sqlite3_column_int64(stmt, 0);
-                std::string email =
-                    reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-                sqlite3_finalize(stmt);
+            if (!r.empty()) {
+                std::string userId = r[0][0].as<std::string>();
+                std::string email = r[0][1].as<std::string>();
+                txn.commit();
+
                 std::string token = createJwt(userId, jwtSecret);
                 sendJson(res, 200, {
                     {"token", token},
                     {"user", {{"id", userId}, {"username", username}, {"email", email}}}
                 });
             } else {
-                sqlite3_finalize(stmt);
+                txn.commit();
                 sendJson(res, 401, {{"error", "Invalid credentials"}});
             }
         } catch (const json::exception& e) {
             sendJson(res, 400, {{"error", e.what()}});
+        } catch (const std::exception& e) {
+            sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
         }
     });
 }

@@ -1,6 +1,5 @@
 #include "AiAdvisorHandler.h"
 #include <nlohmann/json.hpp>
-#include <sqlite3.h>
 #include <iomanip>
 #include <sstream>
 #include <map>
@@ -24,27 +23,29 @@ void sendJson(httplib::Response& res, int status, const json& body) {
  * external LLM API here (e.g. OpenAI), with the API key read from an
  * environment variable – never hardcoded.
  */
-std::string generateAdvice(sqlite3* db, long long userId) {
-    const char* sql =
-        "SELECT category, SUM(amount) AS total "
-        "FROM budget_items WHERE user_id=? "
-        "GROUP BY category ORDER BY total DESC;";
+std::string generateAdvice(pqxx::connection& conn, const std::string& userUuid) {
+    try {
+        pqxx::work txn(conn);
+        std::string sql = R"(
+            SELECT COALESCE(p.name, c.name) AS main_category, SUM(t.amount) AS total
+            FROM transactions t
+            JOIN categories c ON t.category_id = c.id
+            LEFT JOIN categories p ON c.parent_id = p.id
+            WHERE t.user_id::text=$1
+            GROUP BY main_category
+            ORDER BY total DESC
+        )";
+        pqxx::result r = txn.exec_params(sql, userUuid);
+        txn.commit();
 
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return "Unable to analyse your budget at this time.";
-    }
-    sqlite3_bind_int64(stmt, 1, userId);
-
-    std::map<std::string, double> spending;
-    double totalSpend = 0.0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        std::string cat = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        double      amt = sqlite3_column_double(stmt, 1);
-        spending[cat]   = amt;
-        totalSpend     += amt;
-    }
-    sqlite3_finalize(stmt);
+        std::map<std::string, double> spending;
+        double totalSpend = 0.0;
+        for (const auto& row : r) {
+            std::string cat = row["main_category"].as<std::string>();
+            double amt = row["total"].as<double>();
+            spending[cat] = amt;
+            totalSpend += amt;
+        }
 
     if (spending.empty()) {
         return "No spending data found yet. Start by adding some budget items!";
@@ -76,6 +77,9 @@ std::string generateAdvice(sqlite3* db, long long userId) {
 
     advice << "Review your spending monthly to stay on track with your goals.";
     return advice.str();
+    } catch (const std::exception& e) {
+        return "Unable to analyse your budget at this time.";
+    }
 }
 
 } // namespace
@@ -84,12 +88,13 @@ void registerAiAdvisorRoutes(httplib::Server& svr, Database& db,
                              const std::string& jwtSecret) {
     svr.Get("/api/ai/advice", [&db, &jwtSecret](
                 const httplib::Request& req, httplib::Response& res) {
-        long long userId = validateToken(req.get_header_value("Authorization"), jwtSecret);
-        if (userId < 0) {
+        auto userUuid = validateTokenUuid(req.get_header_value("Authorization"), jwtSecret, db);
+        if (!userUuid) {
             sendJson(res, 401, {{"error", "Unauthorized"}});
             return;
         }
-        std::string advice = generateAdvice(db.handle(), userId);
+        auto lock = db.connLock();
+        std::string advice = generateAdvice(db.conn(), *userUuid);
         sendJson(res, 200, {{"advice", advice}});
     });
 }
