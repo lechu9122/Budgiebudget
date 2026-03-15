@@ -2,6 +2,7 @@
 
 #include "Database.h"
 #include <httplib.h>
+#include <optional>
 
 namespace budgie {
 
@@ -19,5 +20,24 @@ void registerAuthRoutes(httplib::Server& svr, Database& db,
  */
 long long validateToken(const std::string& authHeader,
                         const std::string& jwtSecret);
+
+/**
+ * Validate a Bearer token and return UUID subject string when valid.
+ */
+std::optional<std::string> validateTokenUuid(const std::string& authHeader,
+                                             const std::string& jwtSecret);
+
+/**
+ * Validate a Bearer token and resolve the subject to a real UUID.
+ * If the subject is not a UUID, looks up user_subject_map for legacy tokens.
+ */
+std::optional<std::string> validateTokenUuid(const std::string& authHeader,
+                                             const std::string& jwtSecret,
+                                             Database& db);
+
+/**
+ * Resolve the numeric JWT subject to the actual UUID used by PostgreSQL tables.
+ */
+std::optional<std::string> resolveUserUuid(Database& db, long long tokenUserId);
 
 } // namespace budgie

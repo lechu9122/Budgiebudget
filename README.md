@@ -12,41 +12,49 @@ Budgiebudget/
 │   ├── public/
 │   │   └── index.html
 │   ├── src/
-│   │   ├── components/     # Reusable UI components
-│   │   │   ├── AiAdvisor.tsx
-│   │   │   ├── BudgetForm.tsx
-│   │   │   └── BudgetItemCard.tsx
-│   │   ├── pages/          # Route-level page components
-│   │   │   ├── Dashboard.tsx
-│   │   │   └── Login.tsx
+│   │   ├── components/     # UI components (forms, wizard, cards, etc.)
+│   │   ├── pages/          # Dashboard, Login
 │   │   ├── services/
 │   │   │   └── api.ts      # Axios wrapper for the C++ REST API
+│   │   ├── styles/
+│   │   │   └── index.css   # Tailwind CSS
 │   │   ├── types/
 │   │   │   └── index.ts    # Shared TypeScript interfaces
+│   │   ├── utils/
+│   │   │   └── budgetMath.ts
 │   │   ├── App.tsx
 │   │   └── index.tsx
 │   ├── package.json
-│   └── tsconfig.json
+│   ├── tsconfig.json
+│   ├── tailwind.config.js
+│   └── postcss.config.js
 │
 ├── backend/                # C++ REST API server (cpp-httplib + SQLite)
 │   ├── include/
 │   │   ├── AiAdvisorHandler.h
 │   │   ├── AuthHandler.h
 │   │   ├── BudgetHandler.h
-│   │   └── Database.h
+│   │   ├── Database.h
+│   │   └── OnboardingHandler.h
 │   ├── src/
 │   │   ├── AiAdvisorHandler.cpp
 │   │   ├── AuthHandler.cpp
 │   │   ├── BudgetHandler.cpp
 │   │   ├── Database.cpp
+│   │   ├── OnboardingHandler.cpp
 │   │   └── main.cpp
 │   └── CMakeLists.txt
 │
 ├── database/
 │   └── schema.sql          # SQLite schema (users + budget_items)
 │
+├── scripts/
+│   └── start-pro.js        # Unified startup script for Windows + WSL
+│
 ├── .env.example            # Environment variable template
 ├── .gitignore
+├── LICENSE
+├── package.json
 └── README.md
 ```
 
@@ -106,6 +114,41 @@ npm start
 
 The React dev server starts on `http://localhost:3000` and proxies `/api` requests to the C++ backend.
 
+### 4 - Run Frontend + Backend with one command (Windows + WSL)
+
+From the project root:
+
+```bash
+npm run startpro
+```
+
+What this does:
+
+- Starts the backend in WSL (loads `.env`, builds with CMake, runs `budgie_backend`)
+- Starts the frontend React dev server
+- Runs both at the same time in one command
+
+Press `Ctrl + C` to stop both services.
+
+### Quick command summary
+
+- Backend only (WSL):
+
+Use the commands in **Step 2 - Start the backend** above.
+
+- Frontend only:
+
+```bash
+cd frontend
+npm start
+```
+
+- Both together:
+
+```bash
+npm run startpro
+```
+
 ---
 
 ## API Endpoints
@@ -119,6 +162,7 @@ The React dev server starts on `http://localhost:3000` and proxies `/api` reques
 | `PUT` | `/api/budget/:id` | Bearer JWT | Update budget item |
 | `DELETE` | `/api/budget/:id` | Bearer JWT | Delete budget item |
 | `GET` | `/api/ai/advice` | Bearer JWT | Get AI spending advice |
+| `POST` | `/api/onboarding` | Bearer JWT | Validate onboarding totals and save initial budget items |
 | `GET` | `/api/health` | – | Health check |
 
 ---

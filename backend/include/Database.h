@@ -1,39 +1,43 @@
 #pragma once
 
-#include <sqlite3.h>
+#include <pqxx/pqxx>
 #include <string>
-#include <vector>
-#include <optional>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 
 namespace budgie {
 
 /**
- * Thin RAII wrapper around a SQLite3 database connection.
- * Opens (and creates if needed) the database at the given path, and applies
- * the initial schema when the tables do not yet exist.
+ * RAII wrapper around a PostgreSQL database connection using libpqxx.
+ * Connects to Supabase/PostgreSQL and applies the schema if needed.
+ * Thread-safe: callers must hold the mutex via connLock() while using conn().
  */
 class Database {
 public:
-    explicit Database(const std::string& dbPath);
+    explicit Database(const std::string& connectionString);
     ~Database();
 
-    // Non-copyable, movable
+    // Non-copyable, non-movable
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    sqlite3* handle() const { return db_; }
+    /** Get the pqxx connection object. Must hold connLock() while using. */
+    pqxx::connection& conn();
+
+    /** Get a unique lock on the connection mutex. Hold this while using conn(). */
+    std::unique_lock<std::mutex> connLock();
 
     /** Execute a single SQL statement that returns no rows. */
     void exec(const std::string& sql);
 
-    /** Return the row-id of the last INSERT. */
-    long long lastInsertRowId() const;
-
 private:
-    sqlite3* db_{nullptr};
+    std::string connectionString_;
+    std::unique_ptr<pqxx::connection> conn_;
+    std::mutex mtx_;
 
     void applySchema();
+    void ensureConnected();
 };
 
 } // namespace budgie
