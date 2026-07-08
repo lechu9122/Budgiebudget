@@ -6,6 +6,9 @@
 #include <iomanip>
 #include <stdexcept>
 #include <iostream>
+#include <ctime>
+#include <vector>
+#include <optional>
 
 using json = nlohmann::json;
 
@@ -233,19 +236,20 @@ void registerAuthRoutes(httplib::Server& svr, Database& db,
         try {
             auto body = json::parse(req.body);
             std::string username = body.at("username").get<std::string>();
+            std::string email    = body.at("email").get<std::string>();
+            std::string name     = body.at("name").get<std::string>();
+            std::string phone    = body.value("phone", "");
             std::string password = body.at("password").get<std::string>();
-            // Use username as email placeholder if no email supplied.
-            std::string email    = body.value("email", username + "@budgie.local");
 
-            if (username.empty() || password.size() < 6) {
+            if (username.empty() || email.empty() || name.empty() || password.size() < 6) {
                 sendJson(res, 400,
-                    {{"error", "username required and password must be >= 6 chars"}});
+                    {{"error", "username, email, name required; password must be >= 6 chars"}});
                 return;
             }
 
             std::string pwHash = hashPassword(password);
 
-            // Insert user using pqxx
+            // Insert user using pqxx with explicit connection lock
             try {
                 auto lock = db.connLock();
                 pqxx::work txn(db.conn());
@@ -255,22 +259,38 @@ void registerAuthRoutes(httplib::Server& svr, Database& db,
                     RETURNING id
                 )";
                 pqxx::result r = txn.exec_params(sql, username, email, pwHash);
+                
+                if (r.empty()) {
+                    sendJson(res, 500, {{"error", "Failed to create user"}});
+                    return;
+                }
+                
                 std::string userId = r[0][0].as<std::string>();
                 txn.commit();
+                
+                std::cerr << "[INFO] User registered: " << username << " (" << userId << ")\n";
 
                 std::string token = createJwt(userId, jwtSecret);
                 sendJson(res, 201, {
                     {"token", token},
-                    {"user", {{"id", userId}, {"username", username}, {"email", email}}}
+                    {"user", {
+                        {"id", userId}, 
+                        {"username", username}, 
+                        {"email", email},
+                        {"name", name}
+                    }}
                 });
             } catch (const pqxx::unique_violation& e) {
-                sendJson(res, 409, {{"error", "Username already taken"}});
+                std::cerr << "[ERROR] Registration unique violation: " << e.what() << "\n";
+                sendJson(res, 409, {{"error", "Username or email already taken"}});
                 return;
             } catch (const std::exception& e) {
+                std::cerr << "[ERROR] Registration DB error: " << e.what() << "\n";
                 sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
                 return;
             }
         } catch (const json::exception& e) {
+            std::cerr << "[ERROR] Registration JSON error: " << e.what() << "\n";
             sendJson(res, 400, {{"error", e.what()}});
         }
     });
@@ -280,35 +300,45 @@ void registerAuthRoutes(httplib::Server& svr, Database& db,
                 const httplib::Request& req, httplib::Response& res) {
         try {
             auto body = json::parse(req.body);
-            std::string username = body.at("username").get<std::string>();
+            std::string emailOrUsername = body.at("emailOrUsername").get<std::string>();
             std::string password = body.at("password").get<std::string>();
             std::string pwHash   = hashPassword(password);
 
-            // Query user using pqxx
+            // Query user using pqxx - try both email and username
             auto lock = db.connLock();
             pqxx::work txn(db.conn());
             std::string sql = R"(
-                SELECT id, email FROM profiles WHERE username=$1 AND password_hash=$2
+                SELECT id, username, email FROM profiles 
+                WHERE (email=$1 OR username=$1) AND password_hash=$2
             )";
-            pqxx::result r = txn.exec_params(sql, username, pwHash);
+            pqxx::result r = txn.exec_params(sql, emailOrUsername, pwHash);
+            txn.commit();
 
             if (!r.empty()) {
                 std::string userId = r[0][0].as<std::string>();
-                std::string email = r[0][1].as<std::string>();
-                txn.commit();
+                std::string username = r[0][1].as<std::string>();
+                std::string userEmail = r[0][2].as<std::string>();
+                
+                std::cerr << "[INFO] User logged in: " << username << "\n";
 
                 std::string token = createJwt(userId, jwtSecret);
                 sendJson(res, 200, {
                     {"token", token},
-                    {"user", {{"id", userId}, {"username", username}, {"email", email}}}
+                    {"user", {
+                        {"id", userId}, 
+                        {"username", username}, 
+                        {"email", userEmail}
+                    }}
                 });
             } else {
-                txn.commit();
-                sendJson(res, 401, {{"error", "Invalid credentials"}});
+                std::cerr << "[WARN] Login failed for: " << emailOrUsername << "\n";
+                sendJson(res, 401, {{"error", "Invalid email/username or password"}});
             }
         } catch (const json::exception& e) {
+            std::cerr << "[ERROR] Login JSON error: " << e.what() << "\n";
             sendJson(res, 400, {{"error", e.what()}});
         } catch (const std::exception& e) {
+            std::cerr << "[ERROR] Login DB error: " << e.what() << "\n";
             sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
         }
     });

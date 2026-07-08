@@ -1,6 +1,10 @@
 #include "BudgetHandler.h"
 #include <nlohmann/json.hpp>
+#include <httplib.h>
+#include <pqxx/pqxx>
 #include <iostream>
+#include <string>
+#include <exception>
 
 using json = nlohmann::json;
 

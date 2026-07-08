@@ -2,6 +2,8 @@
 #include <pqxx/pqxx>
 #include <stdexcept>
 #include <iostream>
+#include <memory>
+#include <mutex>
 
 namespace budgie {
 

@@ -7,19 +7,52 @@ interface LoginProps {
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
+  
+  // Login fields
+  const [emailOrUsername, setEmailOrUsername] = useState('');
   const [password, setPassword] = useState('');
+  
+  // Register fields
+  const [username, setUsername] = useState('');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
+  
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      const fn = mode === 'login' ? login : register;
-      const { token, user } = await fn({ username, password });
-      onLogin(token, user.id, mode === 'register');
+      const { token, user } = await login({ emailOrUsername, password });
+      onLogin(token, user.id, false);
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('An unexpected error occurred.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const { token, user } = await register({ 
+        username, 
+        email, 
+        name,
+        phone: phone || undefined,
+        password: registerPassword 
+      });
+      onLogin(token, user.id, true);
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);
@@ -34,8 +67,13 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const toggleMode = () => {
     setMode(mode === 'login' ? 'register' : 'login');
     setError(null);
-    setUsername('');
+    setEmailOrUsername('');
     setPassword('');
+    setUsername('');
+    setName('');
+    setEmail('');
+    setPhone('');
+    setRegisterPassword('');
   };
 
   return (
@@ -56,90 +94,175 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             {mode === 'login' ? 'Welcome Back' : 'Create Account'}
           </h2>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Username Field */}
-            <div>
-              <label htmlFor="username" className="label">
-                Username
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                  </svg>
+          {mode === 'login' ? (
+            /* LOGIN FORM */
+            <form onSubmit={handleLoginSubmit} className="space-y-5">
+              {/* Email or Username Field */}
+              <div>
+                <label htmlFor="emailOrUsername" className="label">Email or Username</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  </div>
+                  <input
+                    id="emailOrUsername"
+                    type="text"
+                    value={emailOrUsername}
+                    onChange={(e) => setEmailOrUsername(e.target.value)}
+                    required
+                    className="input pl-10"
+                    placeholder="Enter your email or username"
+                    autoComplete="username"
+                  />
                 </div>
+              </div>
+
+              {/* Password Field */}
+              <div>
+                <label htmlFor="password-login" className="label">Password</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  </div>
+                  <input
+                    id="password-login"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    className="input pl-10"
+                    placeholder="Enter your password"
+                    autoComplete="current-password"
+                  />
+                </div>
+              </div>
+
+              {/* Error Message */}
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg animate-slide-in">
+                  <div className="flex items-center">
+                    <svg className="h-5 w-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    {error}
+                  </div>
+                </div>
+              )}
+
+              {/* Submit Button */}
+              <button
+                type="submit"
+                disabled={loading}
+                className="btn btn-primary w-full text-lg py-3"
+              >
+                {loading ? 'Signing in...' : 'Sign In'}
+              </button>
+            </form>
+          ) : (
+            /* REGISTER FORM */
+            <form onSubmit={handleRegisterSubmit} className="space-y-5">
+              {/* Username Field */}
+              <div>
+                <label htmlFor="username" className="label">Username</label>
                 <input
                   id="username"
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   required
-                  className="input pl-10"
-                  placeholder="Enter your username"
+                  className="input"
+                  placeholder="Choose a username"
                   autoComplete="username"
                 />
               </div>
-            </div>
 
-            {/* Password Field */}
-            <div>
-              <label htmlFor="password" className="label">
-                Password
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                </div>
+              {/* Name Field */}
+              <div>
+                <label htmlFor="name" className="label">Full Name</label>
                 <input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  id="name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                   required
-                  minLength={6}
-                  className="input pl-10"
-                  placeholder="Enter your password"
-                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  className="input"
+                  placeholder="Enter your full name"
                 />
               </div>
-              {mode === 'register' && password.length > 0 && password.length < 6 && (
-                <p className="error-text">Password must be at least 6 characters</p>
-              )}
-            </div>
 
-            {/* Error Message */}
-            {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg animate-slide-in">
-                <div className="flex items-center">
-                  <svg className="h-5 w-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                  </svg>
-                  {error}
-                </div>
+              {/* Email Field */}
+              <div>
+                <label htmlFor="email-register" className="label">Email</label>
+                <input
+                  id="email-register"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  className="input"
+                  placeholder="Enter your email"
+                  autoComplete="email"
+                />
               </div>
-            )}
 
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn btn-primary w-full text-lg py-3"
-            >
-              {loading ? (
-                <span className="flex items-center justify-center">
-                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Please wait...
-                </span>
-              ) : (
-                mode === 'login' ? 'Sign In' : 'Create Account'
+              {/* Phone Field (Optional) */}
+              <div>
+                <label htmlFor="phone" className="label">Phone (Optional)</label>
+                <input
+                  id="phone"
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className="input"
+                  placeholder="Enter your phone number"
+                />
+              </div>
+
+              {/* Password Field */}
+              <div>
+                <label htmlFor="password-register" className="label">Password</label>
+                <input
+                  id="password-register"
+                  type="password"
+                  value={registerPassword}
+                  onChange={(e) => setRegisterPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  className="input"
+                  placeholder="At least 6 characters"
+                  autoComplete="new-password"
+                />
+                {registerPassword.length > 0 && registerPassword.length < 6 && (
+                  <p className="error-text">Password must be at least 6 characters</p>
+                )}
+              </div>
+
+              {/* Error Message */}
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg animate-slide-in">
+                  <div className="flex items-center">
+                    <svg className="h-5 w-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    {error}
+                  </div>
+                </div>
               )}
-            </button>
-          </form>
+
+              {/* Submit Button */}
+              <button
+                type="submit"
+                disabled={loading}
+                className="btn btn-primary w-full text-lg py-3"
+              >
+                {loading ? 'Creating account...' : 'Create Account'}
+              </button>
+            </form>
+          )}
 
           {/* Toggle Mode */}
           <div className="mt-6 text-center">

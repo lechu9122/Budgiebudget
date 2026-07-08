@@ -3,6 +3,7 @@
 #include <cmath>
 #include <string>
 #include <iostream>
+#include <exception>
 
 using json = nlohmann::json;
 

@@ -323,8 +323,8 @@ const Dashboard: React.FC<DashboardProps> = ({
                 maxBudget={category.max_budget}
                 percentage={category.percentage}
                 onClick={() => {
-                  // Will open detail modal in Phase 5
-                  console.log('Category clicked:', category.category_name);
+                  console.log('Edit category:', category.category_name);
+                  // TODO: Open CategoryEditModal in Phase 5
                 }}
               />
             ))}
@@ -342,10 +342,11 @@ const Dashboard: React.FC<DashboardProps> = ({
           allowClose={!requireOnboarding}
         />
 
-        {/* Expense Form Modal */}
+        {/* Expense Form Modal - with categorySummaries */}
         <ExpenseFormModal
           isOpen={isExpenseModalOpen}
           categories={categories}
+          categorySummaries={categorySummaries}
           onSave={handleSaveExpense}
           onCreateCategory={handleCreateCategory}
           onCancel={() => setIsExpenseModalOpen(false)}

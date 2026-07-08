@@ -4,6 +4,7 @@ import type { Category, TransactionPayload } from '../types';
 interface ExpenseFormModalProps {
   isOpen: boolean;
   categories: Category[];
+  categorySummaries?: Array<{ category_name: string; max_budget: number; spent: number; remaining: number }>;
   onSave: (payload: TransactionPayload) => Promise<void>;
   onCreateCategory: (name: string) => Promise<Category>;
   onCancel: () => void;
@@ -12,6 +13,7 @@ interface ExpenseFormModalProps {
 const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
   isOpen,
   categories,
+  categorySummaries = [],
   onSave,
   onCreateCategory,
   onCancel,
@@ -48,11 +50,25 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
     return !exactMatch;
   }, [categories, categorySearch]);
 
-  // Get selected category name for display
+  // Get selected category name and remaining budget
   const selectedCategoryName = useMemo(() => {
     const cat = categories.find((c) => c.id === selectedCategory);
     return cat ? cat.name : '';
   }, [categories, selectedCategory]);
+
+  const selectedCategoryRemaining = useMemo(() => {
+    const summary = categorySummaries.find(
+      (s) => s.category_name === selectedCategoryName
+    );
+    return summary ? summary.remaining : 0;
+  }, [categorySummaries, selectedCategoryName]);
+
+  const selectedCategoryMax = useMemo(() => {
+    const summary = categorySummaries.find(
+      (s) => s.category_name === selectedCategoryName
+    );
+    return summary ? summary.max_budget : 0;
+  }, [categorySummaries, selectedCategoryName]);
 
   if (!isOpen) return null;
 
@@ -128,59 +144,20 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
         className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
       >
         <h2 className="text-2xl font-bold text-gray-900">Add Expense</h2>
-        <p className="mt-1 text-sm text-gray-500">Record a new transaction</p>
+        <p className="mt-1 text-sm text-gray-500">Record a new transaction to one of your budget categories</p>
 
         <div className="mt-6 space-y-4">
-          {/* Date Input */}
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700">Date</label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-              required
-            />
-          </div>
-
-          {/* Amount Input */}
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700">Amount ($)</label>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-              placeholder="0.00"
-              required
-            />
-          </div>
-
-          {/* Description Input */}
-          <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700">Description</label>
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-              placeholder="e.g., Grocery shopping at Walmart"
-              required
-            />
-          </div>
-
-          {/* Smart Category Autocomplete */}
+          {/* Category Selection */}
           <div className="relative">
-            <label className="mb-2 block text-sm font-medium text-gray-700">Category</label>
+            <label className="mb-2 block text-sm font-medium text-gray-700">
+              Select Category <span className="text-red-500">*</span>
+            </label>
             <input
               type="text"
               value={categorySearch}
               onChange={(e) => {
                 setCategorySearch(e.target.value);
                 setShowDropdown(true);
-                // Clear selection if user modifies the search
                 if (selectedCategoryName !== e.target.value) {
                   setSelectedCategory(null);
                 }
@@ -194,26 +171,41 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
             {/* Dropdown */}
             {showDropdown && (
               <div className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-300 bg-white shadow-lg">
-                {/* Filtered Categories */}
                 {filteredCategories.length > 0 && (
                   <div>
-                    {filteredCategories.map((cat) => (
-                      <button
-                        key={cat.id}
-                        type="button"
-                        onClick={() => handleCategorySelect(cat.id, cat.name)}
-                        className="w-full px-4 py-2 text-left hover:bg-blue-50 focus:bg-blue-50 focus:outline-none"
-                      >
-                        <div className="font-medium text-gray-900">{cat.name}</div>
-                        {cat.is_custom && (
-                          <div className="text-xs text-gray-500">Custom</div>
-                        )}
-                      </button>
-                    ))}
+                    {filteredCategories.map((cat) => {
+                      const summary = categorySummaries.find((s) => s.category_name === cat.name);
+                      return (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => handleCategorySelect(cat.id, cat.name)}
+                          className="w-full px-4 py-2 text-left hover:bg-blue-50 focus:bg-blue-50 focus:outline-none border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-medium text-gray-900">{cat.name}</div>
+                              {cat.is_custom && (
+                                <div className="text-xs text-gray-500">Custom</div>
+                              )}
+                            </div>
+                            {summary && (
+                              <div className="text-right">
+                                <div className="text-xs font-semibold text-gray-700">
+                                  ${summary.remaining.toFixed(2)} left
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                  of ${summary.max_budget.toFixed(2)}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
-                {/* Create New Category Option */}
                 {showCreateOption && categorySearch.trim() && (
                   <button
                     type="button"
@@ -228,7 +220,6 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
                   </button>
                 )}
 
-                {/* No Results */}
                 {filteredCategories.length === 0 && !showCreateOption && (
                   <div className="px-4 py-2 text-sm text-gray-500">No categories found</div>
                 )}
@@ -236,14 +227,80 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
             )}
           </div>
 
-          {/* Selected Category Display */}
+          {/* Selected Category Info */}
           {selectedCategory && (
-            <div className="rounded-lg bg-blue-50 p-3 text-sm">
-              <span className="text-blue-700">
-                Selected: <span className="font-semibold">{selectedCategoryName}</span>
-              </span>
+            <div className="rounded-lg bg-blue-50 p-3 border border-blue-200">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold text-blue-900">{selectedCategoryName}</span>
+                <span className="text-sm font-bold text-blue-700">
+                  ${selectedCategoryRemaining.toFixed(2)} remaining
+                </span>
+              </div>
+              <div className="text-xs text-blue-700">
+                Budget: ${selectedCategoryMax.toFixed(2)} • Progress Bar
+              </div>
+              {/* Mini progress bar */}
+              <div className="mt-2 h-2 w-full bg-blue-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 transition-all duration-300"
+                  style={{
+                    width: `${selectedCategoryMax > 0 ? ((selectedCategoryMax - selectedCategoryRemaining) / selectedCategoryMax) * 100 : 0}%`,
+                  }}
+                />
+              </div>
             </div>
           )}
+
+          {/* Date Input */}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-gray-700">Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+              required
+            />
+          </div>
+
+          {/* Amount Input */}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-gray-700">
+              Amount ($) <span className="text-red-500">*</span>
+            </label>
+            <div className="relative">
+              <span className="absolute left-3 top-2.5 text-gray-500">$</span>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 pl-7 pr-3 py-2 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                placeholder="0.00"
+                required
+              />
+            </div>
+            {selectedCategoryRemaining > 0 && parseFloat(amount) > selectedCategoryRemaining && (
+              <p className="mt-1 text-xs text-orange-600">
+                ⚠️ This will exceed your ${selectedCategoryRemaining.toFixed(2)} remaining budget
+              </p>
+            )}
+          </div>
+
+          {/* Description Input */}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-gray-700">
+              Description <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+              placeholder="e.g., Gas at Shell station"
+            />
+          </div>
         </div>
 
         {/* Action Buttons */}
@@ -258,7 +315,7 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
           </button>
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || !selectedCategory}
             className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving ? 'Saving...' : 'Add Expense'}

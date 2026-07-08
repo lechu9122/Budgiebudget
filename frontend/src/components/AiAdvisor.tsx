@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { getAiAdvice } from '../services/api';
+import { getAdvice } from '../services/api';
 
 const AiAdvisor: React.FC = () => {
   const [advice, setAdvice] = useState<string | null>(null);
@@ -11,7 +11,7 @@ const AiAdvisor: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await getAiAdvice();
+      const result = await getAdvice();
       setAdvice(result.advice);
       setIsExpanded(true);
     } catch {

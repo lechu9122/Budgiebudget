@@ -1,5 +1,5 @@
 import React, { ReactNode, useEffect, useRef, useState } from 'react';
-import { getAiAdvice } from '../services/api';
+import { getAdvice } from '../services/api';
 
 interface MainLayoutProps {
   children: ReactNode;
@@ -77,13 +77,13 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout, o
     setSending(true);
 
     try {
-      const ai = await getAiAdvice();
+      const result = await getAdvice();
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now() + 1,
           role: 'assistant',
-          content: ai.advice,
+          content: result.advice,
         },
       ]);
     } catch {

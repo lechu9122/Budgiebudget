@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface CategoryRowProps {
   categoryName: string;
@@ -15,6 +15,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   percentage,
   onClick,
 }) => {
+  const [showEditHint, setShowEditHint] = useState(false);
+
   // 1. Calculate the percentage spent
   const progressPercent = maxBudget > 0 ? (spent / maxBudget) * 100 : 0;
 
@@ -35,8 +37,17 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   return (
     <div
       onClick={onClick}
-      className="group cursor-pointer rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-all duration-200 hover:shadow-md mb-4"
+      onMouseEnter={() => setShowEditHint(true)}
+      onMouseLeave={() => setShowEditHint(false)}
+      className="group cursor-pointer rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-all duration-200 hover:shadow-md hover:border-blue-300 mb-4 relative"
     >
+      {/* Edit Hint Tooltip */}
+      {showEditHint && (
+        <div className="absolute top-0 right-0 mt-2 mr-2 bg-gray-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap">
+          Click to edit budget
+        </div>
+      )}
+
       <div className="mb-2 flex items-end justify-between">
         <div className="flex-1">
           <h3 className="text-lg font-semibold text-gray-800 transition-colors group-hover:text-blue-600">
