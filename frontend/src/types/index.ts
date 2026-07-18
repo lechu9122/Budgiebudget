@@ -3,7 +3,8 @@ export interface User {
   id: string;
   username: string;
   email: string;
-  created_at: string;
+  name?: string;
+  created_at?: string;
 }
 
 /** Represents a category (standard or custom). */
@@ -61,6 +62,32 @@ export interface BudgetAllocationPayload {
   percentage: number;
 }
 
+/** Budget allocation as returned by GET /api/allocations (joined with category name). */
+export interface BudgetAllocationView {
+  id: string;
+  category_id: string;
+  category_name: string;
+  max_budget: number;
+  percentage: number;
+  month: number;
+  year: number;
+}
+
+/** One row of a budget plan sent to POST /api/allocations. */
+export interface BudgetPlanExpense {
+  category: string;
+  amount: number;
+  frequency: string;
+}
+
+/** An income stream (or one-off gain) as stored in income_sources. */
+export interface IncomeSource {
+  id?: string;
+  name: string;
+  amount: number;
+  frequency: string;
+}
+
 /** Represents a transaction (actual spending) with category_id reference. */
 export interface Transaction {
   id: string;
@@ -105,8 +132,9 @@ export interface AiAdvice {
 
 export interface OnboardingIncomeItem {
   id: number;
+  name?: string;
   amount: number;
-  frequency: 'Weekly' | 'Fortnightly' | 'Monthly' | 'Yearly';
+  frequency: 'Weekly' | 'Fortnightly' | 'Monthly' | 'Yearly' | 'One-off';
 }
 
 export interface OnboardingExpenseItem {
@@ -125,12 +153,13 @@ export interface OnboardingResponse {
   status: 'ok';
   monthly_income: number;
   monthly_expenses: number;
+  surplus_stored: number;
   saved_items: number;
 }
 
 /** Combined view for dashboard display. */
 export interface CategorySummary {
-  category_id: number;
+  category_id: string;
   category_name: string;
   max_budget: number;
   percentage: number;

@@ -1,5 +1,5 @@
-export type Frequency = "Daily" | "Weekly" | "Fortnightly" | "Monthly" | "Yearly";
-export type IncomeFrequency = "Weekly" | "Fortnightly" | "Monthly" | "Yearly";
+export type Frequency = "Daily" | "Weekly" | "Fortnightly" | "Monthly" | "Yearly" | "One-off";
+export type IncomeFrequency = "Weekly" | "Fortnightly" | "Monthly" | "Yearly" | "One-off";
 
 export interface IncomeItem {
   id: number;
@@ -57,6 +57,8 @@ export function convertToMonthly(amount: number, frequency: Frequency): number {
       return roundToCent(amount);
     case "Yearly":
       return roundToCent(amount / 12);
+    case "One-off":
+      return roundToCent(amount); // counts once, in the current month
     default:
       return roundToCent(amount);
   }

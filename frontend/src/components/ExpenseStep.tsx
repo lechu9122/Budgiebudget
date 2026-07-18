@@ -17,6 +17,10 @@ interface ExpenseStepProps {
   initialItems?: ExpenseDraft[];
   onBack: () => void;
   onFinish: (items: ExpenseDraft[]) => void;
+  backLabel?: string;
+  finishLabel?: string;
+  /** Heading text; pass '' to hide (when the host modal has its own header). */
+  title?: string;
 }
 
 const nextId = () => Date.now() + Math.floor(Math.random() * 1000);
@@ -27,6 +31,9 @@ const ExpenseStep: React.FC<ExpenseStepProps> = ({
   initialItems,
   onBack,
   onFinish,
+  backLabel = 'Back',
+  finishLabel = 'Finish Onboarding',
+  title = "Now let's map your expenses.",
 }) => {
   const [items, setItems] = useState<ExpenseDraft[]>(
     initialItems && initialItems.length > 0
@@ -106,7 +113,7 @@ const ExpenseStep: React.FC<ExpenseStepProps> = ({
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-900">Now let's map your expenses.</h2>
+      {title && <h2 className="text-2xl font-bold text-gray-900">{title}</h2>}
       <p className="mt-1 text-sm text-gray-500">
         Allocate percentages or exact amounts of your monthly income: <strong className="text-gray-900">${totalMonthlyIncome.toFixed(2)}</strong>
       </p>
@@ -248,7 +255,7 @@ const ExpenseStep: React.FC<ExpenseStepProps> = ({
           onClick={onBack}
           className="rounded-lg border border-gray-300 px-5 py-2.5 text-gray-700 transition hover:bg-gray-100"
         >
-          Back
+          {backLabel}
         </button>
         <button
           type="button"
@@ -256,7 +263,7 @@ const ExpenseStep: React.FC<ExpenseStepProps> = ({
           disabled={exceeds}
           className="rounded-lg bg-primary-600 px-5 py-2.5 font-medium text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-400 disabled:opacity-70"
         >
-          Finish Onboarding
+          {finishLabel}
         </button>
       </div>
     </div>

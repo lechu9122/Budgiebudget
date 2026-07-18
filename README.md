@@ -81,17 +81,31 @@ Budgiebudget/
 | Node.js | ≥ 18 |
 | CMake | ≥ 3.16 |
 | C++ compiler | GCC ≥ 11 or Clang ≥ 14 |
-| SQLite3 dev headers | `libsqlite3-dev` (Debian/Ubuntu) |
-| OpenSSL dev headers | `libssl-dev` (Debian/Ubuntu) |
+| PostgreSQL | ≥ 15 (`brew install postgresql@17` / `apt install postgresql`) |
+| libpqxx dev headers | `brew install libpqxx` / `apt install libpqxx-dev libpq-dev` |
+| OpenSSL dev headers | `brew install openssl` / `apt install libssl-dev` |
 
-### 1 – Configure environment
+### 1 – Set up the database
+
+The app runs against **any PostgreSQL server** — local by default, hosted (e.g. Supabase) for deployment. Only the `DATABASE_URL` connection string changes; the backend applies the schema and seeds default categories automatically on first run.
+
+**Local (default):**
+
+```bash
+brew services start postgresql@17   # macOS; on Linux: sudo service postgresql start
+createdb budgie
+```
+
+**Deploying later:** swap `DATABASE_URL` in `.env` to your hosted PostgreSQL connection string. No code changes needed.
+
+### 2 – Configure environment
 
 ```bash
 cp .env.example .env
-# Edit .env and set a strong JWT_SECRET
+# Edit .env: set DATABASE_URL and a strong JWT_SECRET
 ```
 
-### 2 – Start the backend
+### 3 – Start the backend
 
 ```bash
 cd backend
@@ -104,7 +118,7 @@ export $(grep -v '^#' ../.env | xargs)
 
 The API will be available at `http://localhost:8080`.
 
-### 3 – Start the frontend
+### 4 – Start the frontend
 
 ```bash
 cd frontend
@@ -114,7 +128,7 @@ npm start
 
 The React dev server starts on `http://localhost:3000` and proxies `/api` requests to the C++ backend.
 
-### 4 - Run Frontend + Backend with one command (Windows + WSL)
+### 5 - Run Frontend + Backend with one command
 
 From the project root:
 
@@ -134,7 +148,7 @@ Press `Ctrl + C` to stop both services.
 
 - Backend only (WSL):
 
-Use the commands in **Step 2 - Start the backend** above.
+Use the commands in **Step 3 - Start the backend** above.
 
 - Frontend only:
 

@@ -1,4 +1,16 @@
 import axios, { AxiosInstance } from 'axios';
+import type {
+  User,
+  AuthResponse,
+  Category,
+  Transaction,
+  TransactionPayload,
+  BudgetAllocationView,
+  BudgetPlanExpense,
+  IncomeSource,
+  OnboardingPayload,
+  OnboardingResponse,
+} from '../types';
 
 declare const process: {
   env: {
@@ -24,8 +36,31 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
+// On 401 (expired/invalid token), clear the session and send the user to login.
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const isAuthRequest = error.config?.url?.includes('/auth/');
+    if (error.response?.status === 401 && !isAuthRequest) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('userId');
+      localStorage.removeItem('username');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+/** Extract a human-readable message from any API/axios error. */
+export const getApiErrorMessage = (err: unknown, fallback = 'An unexpected error occurred.'): string => {
+  if (axios.isAxiosError(err)) {
+    return err.response?.data?.error || err.message;
+  }
+  return err instanceof Error ? err.message : fallback;
+};
+
 // ==========================================
-// Types & Interfaces
+// Auth Endpoints
 // ==========================================
 export interface RegisterRequest {
   username: string;
@@ -40,119 +75,17 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface User {
-  id: string;
-  username: string;
-  email: string;
-  name?: string;
-}
+export type { User, AuthResponse };
 
-export interface AuthResponse {
-  token: string;
-  user: User;
-}
-
-export interface Category {
-  id: string;
-  name: string;
-  is_custom: boolean;
-  user_id: string | null;
-}
-
-export interface TransactionPayload {
-  category_id: string;
-  description: string;
-  amount: number;
-  date: string;
-}
-
-export interface Transaction {
-  id: string;
-  user_id: string;
-  category_id: string;
-  category_name: string;
-  description: string;
-  amount: number;
-  date: string;
-  created_at: string;
-}
-
-export interface BudgetItem {
-  id: string;
-  user_id: string;
-  category: string;
-  description: string;
-  amount: number;
-  date: string;
-  created_at: string;
-  updated_at: string;
-}
-
-// Added missing Expense Types to fix compiler errors
-export interface ExpenseItem {
-  id: number | string;
-  category: string;
-  description: string;
-  amount: number;
-  date: string;
-}
-
-export interface ExpensePayload {
-  category: string;
-  description: string;
-  amount: number;
-  date: string;
-}
-
-// ==========================================
-// Auth Endpoints
-// ==========================================
 export const register = async (data: RegisterRequest): Promise<AuthResponse> => {
-  const response = await apiClient.post<AuthResponse>('/auth/register', data);
+  const response = await apiClient.post<AuthResponse>('/api/auth/register', data);
   return response.data;
 };
 
 export const login = async (data: LoginRequest): Promise<AuthResponse> => {
-  const response = await apiClient.post<AuthResponse>('/auth/login', data);
+  const response = await apiClient.post<AuthResponse>('/api/auth/login', data);
   return response.data;
 };
-
-// ==========================================
-// Budget / Expense Endpoints
-// ==========================================
-export const getBudgetItems = async (): Promise<BudgetItem[]> => {
-  const response = await apiClient.get<BudgetItem[]>('/api/budget');
-  return response.data;
-};
-
-export const createBudgetItem = async (item: any): Promise<BudgetItem> => {
-  const response = await apiClient.post<BudgetItem>('/api/budget', item);
-  return response.data;
-};
-
-export const updateBudgetItem = async (id: string, item: any): Promise<BudgetItem> => {
-  const response = await apiClient.put<BudgetItem>(`/api/budget/${id}`, item);
-  return response.data;
-};
-
-export const deleteBudgetItem = async (id: string): Promise<void> => {
-  await apiClient.delete(`/api/budget/${id}`);
-};
-
-// Legacy/Alternative Expense functions (Fixed missing 'apiClient' references)
-export const addExpense = async (payload: ExpensePayload): Promise<ExpenseItem> =>
-  apiClient.post<ExpenseItem>('/api/budget', payload).then((r) => r.data);
-
-export const getExpenses = async (month?: string): Promise<ExpenseItem[]> => {
-  const params = month ? { month } : {};
-  return apiClient.get<ExpenseItem[]>('/api/budget', { params }).then((r) => r.data);
-};
-
-export const updateExpense = async (id: number | string, payload: ExpensePayload): Promise<ExpenseItem> =>
-  apiClient.put<ExpenseItem>(`/api/budget/${id}`, payload).then((r) => r.data);
-
-export const deleteExpense = async (id: number | string): Promise<void> =>
-  apiClient.delete(`/api/budget/${id}`).then(() => undefined);
 
 // ==========================================
 // Category Endpoints
@@ -167,14 +100,8 @@ export const createCategory = async (name: string): Promise<Category> => {
   return response.data;
 };
 
-export const getCategoryNames = async (): Promise<string[]> =>
-  apiClient.get<Category[]>('/api/categories').then((r) => r.data.map((cat) => cat.name));
-
-export const addCustomCategory = async (categoryName: string): Promise<Category> =>
-  apiClient.post<Category>('/api/categories', { name: categoryName }).then((r) => r.data);
-
 // ==========================================
-// Transaction Endpoints
+// Transaction (expense log) Endpoints
 // ==========================================
 export const getTransactions = async (): Promise<Transaction[]> => {
   const response = await apiClient.get<Transaction[]>('/api/transactions');
@@ -187,6 +114,34 @@ export const createTransaction = async (transaction: TransactionPayload): Promis
 };
 
 // ==========================================
+// Budget Allocation Endpoints (envelope model)
+// ==========================================
+export const getAllocations = async (month?: number, year?: number): Promise<BudgetAllocationView[]> => {
+  const params = month && year ? { month, year } : {};
+  const response = await apiClient.get<BudgetAllocationView[]>('/api/allocations', { params });
+  return response.data;
+};
+
+/** Replace this month's budget plan; validated against stored income. */
+export const saveBudgetPlan = async (expenses: BudgetPlanExpense[]): Promise<OnboardingResponse> => {
+  const response = await apiClient.post<OnboardingResponse>('/api/allocations', { expenses });
+  return response.data;
+};
+
+// ==========================================
+// Income Endpoints
+// ==========================================
+export const getIncome = async (): Promise<IncomeSource[]> => {
+  const response = await apiClient.get<IncomeSource[]>('/api/income');
+  return response.data;
+};
+
+/** Replace the user's income sources. */
+export const saveIncome = async (income: IncomeSource[]): Promise<void> => {
+  await apiClient.post('/api/income', { income });
+};
+
+// ==========================================
 // Misc Endpoints
 // ==========================================
 export const getAdvice = async (): Promise<{ advice: string }> => {
@@ -194,8 +149,8 @@ export const getAdvice = async (): Promise<{ advice: string }> => {
   return response.data;
 };
 
-export const submitOnboarding = async (data: any): Promise<any> => {
-  const response = await apiClient.post('/api/onboarding', data);
+export const submitOnboarding = async (data: OnboardingPayload): Promise<OnboardingResponse> => {
+  const response = await apiClient.post<OnboardingResponse>('/api/onboarding', data);
   return response.data;
 };
 

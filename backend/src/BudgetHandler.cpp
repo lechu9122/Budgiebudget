@@ -1,7 +1,6 @@
 #include "BudgetHandler.h"
+#include "HttpUtil.h"
 #include <nlohmann/json.hpp>
-#include <httplib.h>
-#include <pqxx/pqxx>
 #include <iostream>
 #include <string>
 #include <exception>
@@ -9,14 +8,6 @@
 using json = nlohmann::json;
 
 namespace budgie {
-namespace {
-
-void sendJson(httplib::Response& res, int status, const json& body) {
-    res.status = status;
-    res.set_content(body.dump(), "application/json");
-}
-
-} // namespace
 
 void registerBudgetRoutes(httplib::Server& svr, Database& db,
                         const std::string& jwtSecret) {
@@ -157,6 +148,59 @@ void registerBudgetRoutes(httplib::Server& svr, Database& db,
         res.status = 204;
     });
 
+    // --- GET /api/allocations?month=&year= (defaults to current month) ---
+    svr.Get("/api/allocations", [&db, &jwtSecret](
+                const httplib::Request& req, httplib::Response& res) {
+        auto userUuid = validateTokenUuid(req.get_header_value("Authorization"), jwtSecret, db);
+        if (!userUuid) { sendJson(res, 401, {{"error", "Unauthorized"}}); return; }
+
+        try {
+            auto lock = db.connLock();
+            pqxx::work txn(db.conn());
+
+            int month, year;
+            if (req.has_param("month") && req.has_param("year")) {
+                month = std::stoi(req.get_param_value("month"));
+                year  = std::stoi(req.get_param_value("year"));
+            } else {
+                pqxx::result now = txn.exec(
+                    "SELECT EXTRACT(YEAR FROM CURRENT_DATE)::int AS y, "
+                    "EXTRACT(MONTH FROM CURRENT_DATE)::int AS m");
+                year  = now[0]["y"].as<int>();
+                month = now[0]["m"].as<int>();
+            }
+
+            std::string sql = R"(
+                SELECT ba.id, ba.category_id,
+                       COALESCE(c.name, 'Uncategorised') AS category_name,
+                       ba.max_budget, ba.percentage, ba.month, ba.year
+                FROM budget_allocations ba
+                LEFT JOIN categories c ON ba.category_id = c.id
+                WHERE ba.user_id::text = $1 AND ba.month = $2 AND ba.year = $3
+                ORDER BY ba.max_budget DESC
+            )";
+            pqxx::result r = txn.exec_params(sql, *userUuid, month, year);
+            txn.commit();
+
+            json allocations = json::array();
+            for (const auto& row : r) {
+                allocations.push_back({
+                    {"id",            row["id"].as<std::string>("")},
+                    {"category_id",   row["category_id"].as<std::string>("")},
+                    {"category_name", row["category_name"].as<std::string>("")},
+                    {"max_budget",    row["max_budget"].as<double>(0.0)},
+                    {"percentage",    row["percentage"].as<double>(0.0)},
+                    {"month",         row["month"].as<int>(0)},
+                    {"year",          row["year"].as<int>(0)}
+                });
+            }
+            sendJson(res, 200, allocations);
+        } catch (const std::exception& e) {
+            std::cerr << "[ERROR] GET /api/allocations failed: " << e.what() << "\n";
+            sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
+        }
+    });
+
     // --- GET /api/categories ---
     svr.Get("/api/categories", [&db, &jwtSecret](
                 const httplib::Request& req, httplib::Response& res) {
@@ -250,10 +294,11 @@ void registerBudgetRoutes(httplib::Server& svr, Database& db,
             auto lock = db.connLock();
             pqxx::work txn(db.conn());
             std::string sql = R"(
-                SELECT t.id, t.user_id, t.category_id, c.name AS category_name,
+                SELECT t.id, t.user_id, t.category_id,
+                       COALESCE(c.name, 'Uncategorised') AS category_name,
                        t.description, t.amount, t.date, t.created_at
                 FROM transactions t
-                JOIN categories c ON t.category_id = c.id
+                LEFT JOIN categories c ON t.category_id = c.id
                 WHERE t.user_id::text = $1
                 ORDER BY t.date DESC, t.created_at DESC
             )";

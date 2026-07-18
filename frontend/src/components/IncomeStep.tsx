@@ -12,13 +12,26 @@ export type IncomeDraft = {
 interface IncomeStepProps {
   initialItems?: IncomeItem[];
   onNext: (items: IncomeItem[]) => void;
+  nextLabel?: string;
+  /** When provided, renders a cancel button (used by the income editor modal). */
+  onCancel?: () => void;
+  cancelLabel?: string;
+  /** Heading text; pass '' to hide (when the host modal has its own header). */
+  title?: string;
 }
 
 const nextId = () => Date.now() + Math.floor(Math.random() * 1000);
 
 const BAR_COLORS = ['bg-primary-500', 'bg-blue-400', 'bg-teal-400', 'bg-indigo-400', 'bg-purple-400'];
 
-const IncomeStep: React.FC<IncomeStepProps> = ({ initialItems, onNext }) => {
+const IncomeStep: React.FC<IncomeStepProps> = ({
+  initialItems,
+  onNext,
+  nextLabel = 'Next',
+  onCancel,
+  cancelLabel = 'Cancel',
+  title = "Let's start with your income.",
+}) => {
   // Map any initial items into our Draft format (adding an empty name if it doesn't exist)
   const [items, setItems] = useState<IncomeDraft[]>(
     initialItems && initialItems.length > 0
@@ -56,7 +69,7 @@ const IncomeStep: React.FC<IncomeStepProps> = ({ initialItems, onNext }) => {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-900">Let's start with your income.</h2>
+      {title && <h2 className="text-2xl font-bold text-gray-900">{title}</h2>}
 
       {/* Dynamic Visual Breakdown Bar */}
       <div className="mt-6 mb-8 rounded-xl border border-gray-200 p-4 bg-gray-50">
@@ -126,6 +139,7 @@ const IncomeStep: React.FC<IncomeStepProps> = ({ initialItems, onNext }) => {
                 <option value="Fortnightly">Fortnightly</option>
                 <option value="Monthly">Monthly</option>
                 <option value="Yearly">Yearly</option>
+                <option value="One-off">One-off (this month)</option>
               </select>
             </div>
 
@@ -154,14 +168,23 @@ const IncomeStep: React.FC<IncomeStepProps> = ({ initialItems, onNext }) => {
         </button>
       </div>
 
-      <div className="mt-6 flex justify-end">
+      <div className={`mt-6 flex ${onCancel ? 'justify-between' : 'justify-end'}`}>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-gray-300 px-5 py-2.5 text-gray-700 transition hover:bg-gray-100"
+          >
+            {cancelLabel}
+          </button>
+        )}
         <button
           type="button"
           onClick={handleNext}
           disabled={monthlyTotal <= 0}
           className="rounded-lg bg-primary-600 px-5 py-2.5 font-medium text-white transition hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Next
+          {nextLabel}
         </button>
       </div>
     </div>

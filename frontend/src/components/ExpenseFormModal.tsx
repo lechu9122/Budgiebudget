@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import Modal from './Modal';
 import type { Category, TransactionPayload } from '../types';
 
 interface ExpenseFormModalProps {
   isOpen: boolean;
   categories: Category[];
   categorySummaries?: Array<{ category_name: string; max_budget: number; spent: number; remaining: number }>;
+  /** Pre-select this category when the modal opens (e.g. from a category's detail view). */
+  initialCategoryId?: string | null;
   onSave: (payload: TransactionPayload) => Promise<void>;
   onCreateCategory: (name: string) => Promise<Category>;
   onCancel: () => void;
@@ -14,6 +17,7 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
   isOpen,
   categories,
   categorySummaries = [],
+  initialCategoryId = null,
   onSave,
   onCreateCategory,
   onCancel,
@@ -26,13 +30,21 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
   const [showDropdown, setShowDropdown] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
 
-  // Set default date to today when modal opens
+  // Set default date (and any pre-selected category) when modal opens
   useEffect(() => {
     if (isOpen) {
       const today = new Date().toISOString().split('T')[0];
       setDate(today);
+      const preset = initialCategoryId
+        ? categories.find((c) => c.id === initialCategoryId)
+        : undefined;
+      if (preset) {
+        setSelectedCategory(preset.id);
+        setCategorySearch(preset.name);
+        setShowDropdown(false);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, initialCategoryId, categories]);
 
   // Filter categories based on search input
   const filteredCategories = useMemo(() => {
@@ -103,11 +115,6 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
       return;
     }
 
-    if (!description.trim()) {
-      alert('Please enter a description');
-      return;
-    }
-
     const amountNum = parseFloat(amount);
     if (isNaN(amountNum) || amountNum <= 0) {
       alert('Please enter a valid amount');
@@ -138,11 +145,8 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 backdrop-blur-md">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
-      >
+    <Modal isOpen={isOpen} onClose={onCancel} zIndexClass="z-[60]">
+      <form onSubmit={handleSubmit}>
         <h2 className="text-2xl font-bold text-gray-900">Add Expense</h2>
         <p className="mt-1 text-sm text-gray-500">Record a new transaction to one of your budget categories</p>
 
@@ -322,7 +326,7 @@ const ExpenseFormModal: React.FC<ExpenseFormModalProps> = ({
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 };
 

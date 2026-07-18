@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import Modal from './Modal';
 import IncomeStep from './IncomeStep';
 import ExpenseStep, { type ExpenseDraft } from './ExpenseStep';
 import { convertToMonthly, roundToCent, type IncomeItem } from '../utils/budgetMath';
@@ -63,6 +64,7 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
 
     const incomeData = incomeItems.map((item) => ({
       id: item.id,
+      name: (item as { name?: string }).name || '',
       amount: roundToCent(item.amount),
       frequency: item.frequency,
     }));
@@ -92,8 +94,13 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-4xl rounded-2xl bg-white p-6 shadow-2xl">
+    <Modal
+      isOpen={true}
+      onClose={allowClose ? onClose : undefined}
+      maxWidthClass="max-w-4xl"
+      zIndexClass="z-[70]"
+    >
+      <>
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold text-gray-900">Budget Onboarding</h1>
@@ -135,8 +142,8 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
             {submitting && <p className="mt-4 text-sm text-gray-500">Saving onboarding data...</p>}
           </>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 };
 

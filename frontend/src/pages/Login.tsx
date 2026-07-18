@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { login, register } from '../services/api';
+import { login, register, getApiErrorMessage } from '../services/api';
 
 interface LoginProps {
   onLogin: (token: string, userId: string, isNewAccount: boolean) => void;
@@ -28,13 +28,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     setLoading(true);
     try {
       const { token, user } = await login({ emailOrUsername, password });
+      localStorage.setItem('username', user.username);
       onLogin(token, user.id, false);
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('An unexpected error occurred.');
-      }
+      setError(getApiErrorMessage(err, 'An unexpected error occurred.'));
     } finally {
       setLoading(false);
     }
@@ -50,15 +47,12 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         email, 
         name,
         phone: phone || undefined,
-        password: registerPassword 
+        password: registerPassword
       });
+      localStorage.setItem('username', user.username);
       onLogin(token, user.id, true);
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('An unexpected error occurred.');
-      }
+      setError(getApiErrorMessage(err, 'An unexpected error occurred.'));
     } finally {
       setLoading(false);
     }

@@ -1,4 +1,5 @@
 #include "AiAdvisorHandler.h"
+#include "HttpUtil.h"
 #include <nlohmann/json.hpp>
 #include <iomanip>
 #include <sstream>
@@ -12,11 +13,6 @@ using json = nlohmann::json;
 
 namespace budgie {
 namespace {
-
-void sendJson(httplib::Response& res, int status, const json& body) {
-    res.status = status;
-    res.set_content(body.dump(), "application/json");
-}
 
 /**
  * Heuristic AI advisor.

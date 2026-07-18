@@ -35,6 +35,77 @@ ALTER TABLE IF EXISTS profiles ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE IF EXISTS profiles ADD COLUMN IF NOT EXISTS password_hash TEXT;
 ALTER TABLE IF EXISTS profiles DROP CONSTRAINT IF EXISTS profiles_id_fkey;
 
+-- Categories table
+CREATE TABLE IF NOT EXISTS categories (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT NOT NULL,
+  parent_id UUID REFERENCES categories(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
+  is_custom BOOLEAN DEFAULT false,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Budget allocations table
+CREATE TABLE IF NOT EXISTS budget_allocations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  category_id UUID REFERENCES categories(id) ON DELETE CASCADE NOT NULL,
+  max_budget DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  percentage DECIMAL(5, 2) DEFAULT 0.00,
+  month INTEGER CHECK (month >= 1 AND month <= 12) NOT NULL,
+  year INTEGER NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(user_id, category_id, month, year)
+);
+
+-- Budget items table (string-based expenses)
+CREATE TABLE IF NOT EXISTS budget_items (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  category TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
+  date DATE NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Transactions table (ID-based expenses)
+CREATE TABLE IF NOT EXISTS transactions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
+  description TEXT DEFAULT '',
+  amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
+  date DATE NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Income sources table (persisted so the budget editor can prefill them)
+CREATE TABLE IF NOT EXISTS income_sources (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  name TEXT DEFAULT '',
+  amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
+  frequency TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Monthly archives table
+CREATE TABLE IF NOT EXISTS monthly_archives (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  category_id UUID REFERENCES categories(id) ON DELETE CASCADE NOT NULL,
+  year INTEGER NOT NULL,
+  month INTEGER CHECK (month >= 1 AND month <= 12) NOT NULL,
+  total_spent DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  max_budget DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  archived_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(user_id, category_id, year, month)
+);
+
 -- Legacy migration: convert non-UUID user_id columns to UUID via user_subject_map
 DO $$
 DECLARE
@@ -120,67 +191,6 @@ BEGIN
 END
 $$;
 
--- Categories table
-CREATE TABLE IF NOT EXISTS categories (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  name TEXT NOT NULL,
-  parent_id UUID REFERENCES categories(id) ON DELETE CASCADE,
-  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
-  is_custom BOOLEAN DEFAULT false,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
-);
-
--- Budget allocations table
-CREATE TABLE IF NOT EXISTS budget_allocations (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-  category_id UUID REFERENCES categories(id) ON DELETE CASCADE NOT NULL,
-  max_budget DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-  percentage DECIMAL(5, 2) DEFAULT 0.00,
-  month INTEGER CHECK (month >= 1 AND month <= 12) NOT NULL,
-  year INTEGER NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  UNIQUE(user_id, category_id, month, year)
-);
-
--- Budget items table (string-based expenses)
-CREATE TABLE IF NOT EXISTS budget_items (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-  category TEXT NOT NULL,
-  description TEXT DEFAULT '',
-  amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
-  date DATE NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
-);
-
--- Transactions table (ID-based expenses)
-CREATE TABLE IF NOT EXISTS transactions (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-  category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
-  description TEXT DEFAULT '',
-  amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
-  date DATE NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
-);
-
--- Monthly archives table
-CREATE TABLE IF NOT EXISTS monthly_archives (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-  category_id UUID REFERENCES categories(id) ON DELETE CASCADE NOT NULL,
-  year INTEGER NOT NULL,
-  month INTEGER CHECK (month >= 1 AND month <= 12) NOT NULL,
-  total_spent DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-  max_budget DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-  archived_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  UNIQUE(user_id, category_id, year, month)
-);
-
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_profiles_username ON profiles(username);
 CREATE INDEX IF NOT EXISTS idx_categories_user_id ON categories(user_id);
@@ -189,7 +199,54 @@ CREATE INDEX IF NOT EXISTS idx_budget_items_user_id ON budget_items(user_id);
 CREATE INDEX IF NOT EXISTS idx_budget_items_date ON budget_items(date);
 CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_income_sources_user_id ON income_sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_monthly_archives_user_id ON monthly_archives(user_id, year, month);
+
+-- Seed default global categories (user_id NULL = available to every user).
+-- Names match the onboarding wizard presets so tracked expenses line up
+-- with the budget set during onboarding.
+INSERT INTO categories (name, is_custom, user_id)
+SELECT v.name, false, NULL
+FROM (VALUES
+  ('Rent'), ('Groceries'), ('Utilities'), ('Transport'),
+  ('Entertainment'), ('Dining'), ('Savings'), ('Other')
+) AS v(name)
+WHERE NOT EXISTS (
+  SELECT 1 FROM categories c WHERE c.name = v.name AND c.user_id IS NULL
+);
+
+-- One-time migration: older versions stored the onboarding budget plan as
+-- rows in budget_items. Convert those plans into proper per-month
+-- budget_allocations (envelope model). Runs only while budget_allocations
+-- is still empty.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM budget_items)
+     AND NOT EXISTS (SELECT 1 FROM budget_allocations) THEN
+
+    -- Make sure every legacy plan name has a category to attach to
+    INSERT INTO categories (name, is_custom, user_id)
+    SELECT DISTINCT bi.category, true, bi.user_id
+    FROM budget_items bi
+    WHERE NOT EXISTS (
+      SELECT 1 FROM categories c
+      WHERE c.name = bi.category AND (c.user_id IS NULL OR c.user_id = bi.user_id)
+    );
+
+    INSERT INTO budget_allocations (user_id, category_id, max_budget, percentage, month, year)
+    SELECT bi.user_id,
+           (SELECT c.id FROM categories c
+             WHERE c.name = bi.category AND (c.user_id IS NULL OR c.user_id = bi.user_id)
+             ORDER BY c.user_id NULLS FIRST LIMIT 1),
+           SUM(bi.amount), 0,
+           EXTRACT(MONTH FROM CURRENT_DATE)::int,
+           EXTRACT(YEAR FROM CURRENT_DATE)::int
+    FROM budget_items bi
+    GROUP BY bi.user_id, bi.category
+    ON CONFLICT (user_id, category_id, month, year) DO NOTHING;
+  END IF;
+END
+$$;
 )sql";
 
 // ---------------------------------------------------------------------------
@@ -246,9 +303,33 @@ void Database::applySchema() {
         exec(SCHEMA_SQL);
         std::cout << "[INFO] Database schema applied successfully" << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[WARN] Schema application failed (may already exist): " 
+        std::cerr << "[WARN] Schema application failed (may already exist): "
                   << e.what() << std::endl;
     }
+
+    // Health check: the server is useless without these tables, so fail
+    // loudly at startup instead of returning 500s on every request.
+    static const char* requiredTables[] = {
+        "profiles", "categories", "budget_allocations", "income_sources",
+        "budget_items", "transactions", "monthly_archives"
+    };
+    std::string missing;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        pqxx::work txn(*conn_);
+        for (const char* table : requiredTables) {
+            pqxx::result r = txn.exec_params(
+                "SELECT to_regclass('public.' || $1)", table);
+            if (r[0][0].is_null()) {
+                missing += std::string(missing.empty() ? "" : ", ") + table;
+            }
+        }
+        txn.commit();
+    }
+    if (!missing.empty()) {
+        throw std::runtime_error("Database schema is incomplete. Missing tables: " + missing);
+    }
+    std::cout << "[INFO] Database health check passed (all required tables present)" << std::endl;
 }
 
 } // namespace budgie

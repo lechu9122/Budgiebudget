@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import MainLayout from '../components/MainLayout';
+import { getAllocations, getTransactions } from '../services/api';
 
 interface MonthlyMetrics {
   totalIncome: number;
@@ -20,8 +21,13 @@ interface ReportsProps {
   onNavigate: (page: 'dashboard' | 'csv-import' | 'reports' | 'profile') => void;
 }
 
+const currentMonth = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
 const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => {
-  const [selectedMonth, setSelectedMonth] = useState('2026-03');
+  const [selectedMonth, setSelectedMonth] = useState(currentMonth());
   const [metrics, setMetrics] = useState<MonthlyMetrics>({
     totalIncome: 0,
     totalSpent: 0,
@@ -47,35 +53,60 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
 
   useEffect(() => {
     loadReportData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMonth]);
 
   const loadReportData = async () => {
     setLoading(true);
     try {
-      // TODO: Fetch data from backend API using selectedMonth
-      // Example: const data = await getMonthlyArchive(selectedMonth);
-      
-      // Placeholder data
-      setTimeout(() => {
-        setMetrics({
-          totalIncome: 5000.00,
-          totalSpent: 3250.75,
-          netSavings: 1749.25,
-        });
-        
-        setCategories([
-          { category_name: 'Housing', budgeted: 1500, spent: 1500, percentage: 100 },
-          { category_name: 'Groceries', budgeted: 600, spent: 475.50, percentage: 79.25 },
-          { category_name: 'Transportation', budgeted: 400, spent: 350.25, percentage: 87.56 },
-          { category_name: 'Entertainment', budgeted: 300, spent: 125.00, percentage: 41.67 },
-          { category_name: 'Utilities', budgeted: 200, spent: 200, percentage: 100 },
-          { category_name: 'Dining Out', budgeted: 250, spent: 300, percentage: 120 },
-        ]);
-        
-        setLoading(false);
-      }, 500);
+      const [yearStr, monthStr] = selectedMonth.split('-');
+      const [allocations, transactions] = await Promise.all([
+        getAllocations(parseInt(monthStr, 10), parseInt(yearStr, 10)),
+        getTransactions(),
+      ]);
+
+      // Budgeted amounts per category come from that month's budget plan
+      // (budget_allocations, set during onboarding / the budget editor).
+      const budgeted = new Map<string, number>();
+      allocations.forEach((alloc) => {
+        budgeted.set(alloc.category_name, (budgeted.get(alloc.category_name) || 0) + alloc.max_budget);
+      });
+      const totalIncome = allocations.reduce((sum, alloc) => sum + alloc.max_budget, 0);
+
+      // Spending comes from transactions in the selected month.
+      const monthTransactions = transactions.filter((t) => t.date.startsWith(selectedMonth));
+      const spent = new Map<string, number>();
+      monthTransactions.forEach((t) => {
+        spent.set(t.category_name, (spent.get(t.category_name) || 0) + t.amount);
+      });
+      const totalSpent = monthTransactions.reduce((sum, t) => sum + t.amount, 0);
+
+      const categoryNames = new Set([...budgeted.keys(), ...spent.keys()]);
+      const breakdown: CategoryBreakdown[] = Array.from(categoryNames)
+        .map((name) => {
+          const budget = budgeted.get(name) || 0;
+          const used = spent.get(name) || 0;
+          return {
+            category_name: name,
+            budgeted: budget,
+            spent: used,
+            percentage: budget > 0 ? (used / budget) * 100 : used > 0 ? 100 : 0,
+          };
+        })
+        .filter((c) => c.budgeted > 0 || c.spent > 0)
+        .sort((a, b) => b.spent - a.spent);
+
+      setMetrics({
+        totalIncome,
+        totalSpent,
+        netSavings: totalIncome - totalSpent,
+      });
+      setCategories(breakdown);
     } catch (error) {
       console.error('Failed to load report data:', error);
+      setMetrics({ totalIncome: 0, totalSpent: 0, netSavings: 0 });
+      setCategories([]);
+    } finally {
       setLoading(false);
     }
   };

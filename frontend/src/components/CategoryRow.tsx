@@ -44,7 +44,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
       {/* Edit Hint Tooltip */}
       {showEditHint && (
         <div className="absolute top-0 right-0 mt-2 mr-2 bg-gray-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap">
-          Click to edit budget
+          Click to view breakdown
         </div>
       )}
 

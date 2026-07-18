@@ -1,4 +1,5 @@
 #include "AuthHandler.h"
+#include "HttpUtil.h"
 #include <nlohmann/json.hpp>
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
@@ -129,11 +130,6 @@ std::string hashPassword(const std::string& password) {
         oss << std::hex << std::setw(2) << std::setfill('0')
             << static_cast<int>(digest[i]);
     return oss.str();
-}
-
-void sendJson(httplib::Response& res, int status, const json& body) {
-    res.status = status;
-    res.set_content(body.dump(), "application/json");
 }
 
 } // anonymous namespace
