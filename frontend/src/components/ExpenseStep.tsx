@@ -50,46 +50,27 @@ const ExpenseStep: React.FC<ExpenseStepProps> = ({
         ]
   );
 
-  const totalPercentage = useMemo(() => {
-    return roundToCent(items.reduce((sum, item) => sum + item.percentage, 0));
-  }, [items]);
-
-  // Total amount needs to sum up the MONTHLY equivalent of everything
+  // Total amount needs to sum up the MONTHLY equivalent of everything.
+  // The entered amounts are the single source of truth — percentages are
+  // derived for display only and never fed back into the amounts.
   const totalAmount = useMemo(() => {
     return roundToCent(
       items.reduce((sum, item) => sum + convertToMonthly(item.amount, item.frequency as any), 0)
     );
   }, [items]);
 
+  const percentOfIncome = (item: ExpenseDraft): number =>
+    totalMonthlyIncome > 0
+      ? (convertToMonthly(item.amount, item.frequency as any) / totalMonthlyIncome) * 100
+      : 0;
+
+  const totalPercentage = totalMonthlyIncome > 0 ? (totalAmount / totalMonthlyIncome) * 100 : 0;
   const remainder = roundToCent(totalMonthlyIncome - totalAmount);
-  const exceeds = totalPercentage > 100 || totalAmount > totalMonthlyIncome;
+  const exceeds = totalAmount > totalMonthlyIncome;
 
   const updateItem = (id: number, patch: Partial<ExpenseDraft>) => {
     setItems((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item;
-        
-        const updated = { ...item, ...patch };
-        
-        // Bidirectional sync handling frequency conversions
-        if ('percentage' in patch && totalMonthlyIncome > 0) {
-          // 1. User drags slider -> Find the monthly target, then convert it DOWN to their chosen frequency
-          const monthlyTarget = (updated.percentage / 100) * totalMonthlyIncome;
-          let freqAmount = monthlyTarget;
-          
-          if (updated.frequency === 'Weekly') freqAmount = (monthlyTarget * 12) / 52;
-          else if (updated.frequency === 'Yearly') freqAmount = monthlyTarget * 12;
-          
-          updated.amount = roundToCent(freqAmount);
-        } 
-        else if (('amount' in patch || 'frequency' in patch) && totalMonthlyIncome > 0) {
-          // 2. User types an amount OR changes frequency -> Convert it UP to monthly to find the true percentage
-          const monthlyVal = convertToMonthly(updated.amount, updated.frequency as any);
-          updated.percentage = roundToCent((monthlyVal / totalMonthlyIncome) * 100);
-        }
-        
-        return updated;
-      })
+      prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
     );
   };
 
@@ -168,7 +149,7 @@ const ExpenseStep: React.FC<ExpenseStepProps> = ({
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-200"
                 />
                 <div className="text-xs text-gray-500 mt-1 pl-1 whitespace-nowrap">
-                  {item.percentage.toFixed(1)}% of income
+                  ≈ {percentOfIncome(item).toFixed(1)}% of income
                 </div>
               </div>
 
@@ -200,21 +181,6 @@ const ExpenseStep: React.FC<ExpenseStepProps> = ({
               </div>
             </div>
 
-            {/* Percentage Slider */}
-            <div className="mt-4">
-              <label className="mb-1 block text-sm font-medium text-gray-700">
-                Quick Adjust Percentage
-              </label>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="0.5"
-                value={item.percentage}
-                onChange={(e) => updateItem(item.id, { percentage: parseFloat(e.target.value) || 0 })}
-                className="w-full accent-primary-600 cursor-pointer"
-              />
-            </div>
           </div>
         ))}
       </div>

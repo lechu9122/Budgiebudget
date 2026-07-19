@@ -1,6 +1,7 @@
 #include "BudgetHandler.h"
 #include "HttpUtil.h"
 #include <nlohmann/json.hpp>
+#include <cstdio>
 #include <iostream>
 #include <string>
 #include <exception>
@@ -293,6 +294,23 @@ void registerBudgetRoutes(httplib::Server& svr, Database& db,
         try { // ADDED MISSING TRY/CATCH
             auto lock = db.connLock();
             pqxx::work txn(db.conn());
+
+            // Month-start housekeeping: archive any completed months first,
+            // so a new month automatically starts with a clean ledger.
+            pqxx::result pending = txn.exec_params(R"(
+                SELECT (
+                    EXISTS (SELECT 1 FROM transactions
+                            WHERE user_id = $1::uuid AND date < date_trunc('month', CURRENT_DATE))
+                    OR EXISTS (SELECT 1 FROM budget_allocations
+                               WHERE user_id = $1::uuid
+                                 AND (year * 12 + month) <
+                                     (EXTRACT(YEAR FROM CURRENT_DATE)::int * 12 + EXTRACT(MONTH FROM CURRENT_DATE)::int))
+                ) AS p
+            )", *userUuid);
+            if (pending[0][0].as<bool>(false)) {
+                performMonthlyRollover(txn, *userUuid);
+            }
+
             std::string sql = R"(
                 SELECT t.id, t.user_id, t.category_id,
                        COALESCE(c.name, 'Uncategorised') AS category_name,
@@ -321,6 +339,91 @@ void registerBudgetRoutes(httplib::Server& svr, Database& db,
             sendJson(res, 200, transactions);
         } catch (const std::exception& e) {
             std::cerr << "[ERROR] GET /api/transactions failed: " << e.what() << "\n";
+            sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
+        }
+    });
+
+    // --- GET /api/reports/archives : past monthly report cards (max 6) ---
+    svr.Get("/api/reports/archives", [&db, &jwtSecret](
+                const httplib::Request& req, httplib::Response& res) {
+        auto userUuid = validateTokenUuid(req.get_header_value("Authorization"), jwtSecret, db);
+        if (!userUuid) { sendJson(res, 401, {{"error", "Unauthorized"}}); return; }
+
+        try {
+            auto lock = db.connLock();
+            pqxx::work txn(db.conn());
+
+            // Make sure any completed months are archived before reporting
+            performMonthlyRollover(txn, *userUuid);
+
+            pqxx::result r = txn.exec_params(R"(
+                SELECT ma.year, ma.month,
+                       COALESCE(c.name, 'Uncategorised') AS category_name,
+                       ma.total_spent, ma.max_budget,
+                       EXISTS (SELECT 1 FROM monthly_report_csv mc
+                               WHERE mc.user_id = ma.user_id AND mc.year = ma.year AND mc.month = ma.month) AS has_csv
+                FROM monthly_archives ma
+                LEFT JOIN categories c ON ma.category_id = c.id
+                WHERE ma.user_id::text = $1
+                ORDER BY ma.year DESC, ma.month DESC, ma.total_spent DESC
+            )", *userUuid);
+            txn.commit();
+
+            json monthsJson = json::array();
+            int lastY = -1, lastM = -1;
+            for (const auto& row : r) {
+                int y = row["year"].as<int>();
+                int m = row["month"].as<int>();
+                if (y != lastY || m != lastM) {
+                    monthsJson.push_back({
+                        {"year", y}, {"month", m},
+                        {"has_csv", row["has_csv"].as<bool>(false)},
+                        {"categories", json::array()}
+                    });
+                    lastY = y; lastM = m;
+                }
+                monthsJson.back()["categories"].push_back({
+                    {"category_name", row["category_name"].as<std::string>("")},
+                    {"total_spent",   row["total_spent"].as<double>(0.0)},
+                    {"max_budget",    row["max_budget"].as<double>(0.0)}
+                });
+            }
+            sendJson(res, 200, monthsJson);
+        } catch (const std::exception& e) {
+            std::cerr << "[ERROR] GET /api/reports/archives failed: " << e.what() << "\n";
+            sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
+        }
+    });
+
+    // --- GET /api/reports/csv?year=&month= : stored CSV export of a month ---
+    svr.Get("/api/reports/csv", [&db, &jwtSecret](
+                const httplib::Request& req, httplib::Response& res) {
+        auto userUuid = validateTokenUuid(req.get_header_value("Authorization"), jwtSecret, db);
+        if (!userUuid) { sendJson(res, 401, {{"error", "Unauthorized"}}); return; }
+
+        if (!req.has_param("year") || !req.has_param("month")) {
+            sendJson(res, 400, {{"error", "year and month query parameters are required"}});
+            return;
+        }
+
+        try {
+            int year  = std::stoi(req.get_param_value("year"));
+            int month = std::stoi(req.get_param_value("month"));
+
+            auto lock = db.connLock();
+            pqxx::work txn(db.conn());
+            pqxx::result r = txn.exec_params(
+                "SELECT csv FROM monthly_report_csv WHERE user_id = $1::uuid AND year = $2 AND month = $3",
+                *userUuid, year, month);
+            txn.commit();
+
+            if (r.empty()) {
+                sendJson(res, 404, {{"error", "No CSV stored for that month"}});
+                return;
+            }
+            res.set_content(r[0][0].as<std::string>(), "text/csv");
+        } catch (const std::exception& e) {
+            std::cerr << "[ERROR] GET /api/reports/csv failed: " << e.what() << "\n";
             sendJson(res, 500, {{"error", std::string("DB error: ") + e.what()}});
         }
     });
@@ -367,43 +470,128 @@ void registerBudgetRoutes(httplib::Server& svr, Database& db,
     });
 }
 
-void performMonthlyRollover(Database& db, long long userId) {
-    try {
-        auto lock = db.connLock();
-        pqxx::work txn(db.conn());
-        
-        // Get current year and month
-        std::string dateQuery = R"(
-            SELECT EXTRACT(YEAR FROM CURRENT_DATE) AS year,
-                   EXTRACT(MONTH FROM CURRENT_DATE) AS month
-        )";
-        pqxx::result dateResult = txn.exec(dateQuery);
-        
-        if (dateResult.empty()) return;
-        
-        int currentYear = dateResult[0]["year"].as<int>();
-        int currentMonth = dateResult[0]["month"].as<int>();
+namespace {
 
-        // Archive transactions by category for this user
-        std::string archiveSql = R"(
-            INSERT INTO monthly_archives (user_id, category_id, year, month, total_spent, max_budget)
-            SELECT ba.user_id, ba.category_id, $1, $2,
-                COALESCE(SUM(t.amount), 0) AS total_spent, ba.max_budget
-            FROM budget_allocations ba
-            LEFT JOIN transactions t
-                ON ba.category_id = t.category_id
-                AND EXTRACT(MONTH FROM t.date) = $2
-                AND EXTRACT(YEAR FROM t.date) = $1
-            WHERE ba.user_id::text = $3 AND ba.month = $2 AND ba.year = $1
-            GROUP BY ba.user_id, ba.category_id, ba.max_budget
-        )";
-        
-        txn.exec_params(archiveSql, currentYear, currentMonth, std::to_string(userId));
-        txn.commit();
-    } catch (const std::exception& e) {
-        // Log error but don't throw
-        std::cerr << "[ERROR] Monthly rollover failed: " << e.what() << std::endl;
+// Quote a CSV field per RFC 4180 (wrap in quotes, double internal quotes).
+std::string csvField(const std::string& value) {
+    std::string out = "\"";
+    for (char c : value) {
+        if (c == '"') out += "\"\"";
+        else out += c;
     }
+    out += "\"";
+    return out;
+}
+
+std::string money(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", v);
+    return buf;
+}
+
+} // namespace
+
+void performMonthlyRollover(pqxx::work& txn, const std::string& userUuid) {
+    // Every completed month that still has raw transactions or allocations
+    pqxx::result months = txn.exec_params(R"(
+        SELECT DISTINCT y, m FROM (
+            SELECT EXTRACT(YEAR FROM date)::int AS y, EXTRACT(MONTH FROM date)::int AS m
+            FROM transactions
+            WHERE user_id = $1::uuid AND date < date_trunc('month', CURRENT_DATE)
+            UNION
+            SELECT year, month FROM budget_allocations
+            WHERE user_id = $1::uuid
+              AND (year * 12 + month) <
+                  (EXTRACT(YEAR FROM CURRENT_DATE)::int * 12 + EXTRACT(MONTH FROM CURRENT_DATE)::int)
+        ) s ORDER BY y, m
+    )", userUuid);
+
+    for (const auto& row : months) {
+        int y = row["y"].as<int>();
+        int m = row["m"].as<int>();
+
+        // 1. Report card rows from that month's budget plan (spent added below)
+        txn.exec_params(R"(
+            INSERT INTO monthly_archives (user_id, category_id, year, month, total_spent, max_budget)
+            SELECT ba.user_id, ba.category_id, ba.year, ba.month, 0, ba.max_budget
+            FROM budget_allocations ba
+            WHERE ba.user_id = $1::uuid AND ba.year = $2 AND ba.month = $3
+            ON CONFLICT (user_id, category_id, year, month) DO NOTHING
+        )", userUuid, y, m);
+
+        // 2. Fold that month's spending into the report card
+        txn.exec_params(R"(
+            INSERT INTO monthly_archives (user_id, category_id, year, month, total_spent, max_budget)
+            SELECT t.user_id, t.category_id, $2, $3, SUM(t.amount), 0
+            FROM transactions t
+            WHERE t.user_id = $1::uuid AND t.category_id IS NOT NULL
+              AND EXTRACT(YEAR FROM t.date)::int = $2 AND EXTRACT(MONTH FROM t.date)::int = $3
+            GROUP BY t.user_id, t.category_id
+            ON CONFLICT (user_id, category_id, year, month)
+            DO UPDATE SET total_spent = monthly_archives.total_spent + EXCLUDED.total_spent
+        )", userUuid, y, m);
+
+        // 3. Export the raw expense lines to a stored CSV (appended if a CSV
+        //    already exists, e.g. for back-dated expenses added later)
+        pqxx::result lines = txn.exec_params(R"(
+            SELECT t.date::text AS d, COALESCE(c.name, 'Uncategorised') AS category,
+                   t.description, t.amount
+            FROM transactions t
+            LEFT JOIN categories c ON t.category_id = c.id
+            WHERE t.user_id = $1::uuid
+              AND EXTRACT(YEAR FROM t.date)::int = $2 AND EXTRACT(MONTH FROM t.date)::int = $3
+            ORDER BY t.date, t.created_at
+        )", userUuid, y, m);
+
+        if (!lines.empty()) {
+            std::string body;
+            for (const auto& l : lines) {
+                body += l["d"].as<std::string>("") + ","
+                      + csvField(l["category"].as<std::string>("")) + ","
+                      + csvField(l["description"].as<std::string>("")) + ","
+                      + money(l["amount"].as<double>(0.0)) + "\n";
+            }
+
+            pqxx::result existing = txn.exec_params(
+                "SELECT csv FROM monthly_report_csv WHERE user_id = $1::uuid AND year = $2 AND month = $3",
+                userUuid, y, m);
+            std::string csv = existing.empty()
+                ? "Date,Category,Description,Amount\n" + body
+                : existing[0][0].as<std::string>() + body;
+
+            txn.exec_params(R"(
+                INSERT INTO monthly_report_csv (user_id, year, month, csv)
+                VALUES ($1::uuid, $2, $3, $4)
+                ON CONFLICT (user_id, year, month) DO UPDATE SET csv = EXCLUDED.csv
+            )", userUuid, y, m, csv);
+        }
+
+        // 4. Compact: raw data is summarised + exported, so delete it
+        txn.exec_params(R"(
+            DELETE FROM transactions
+            WHERE user_id = $1::uuid
+              AND EXTRACT(YEAR FROM date)::int = $2 AND EXTRACT(MONTH FROM date)::int = $3
+        )", userUuid, y, m);
+        txn.exec_params(
+            "DELETE FROM budget_allocations WHERE user_id = $1::uuid AND year = $2 AND month = $3",
+            userUuid, y, m);
+
+        std::cout << "[INFO] Archived " << y << "-" << m << " into report card for user "
+                  << userUuid << "\n";
+    }
+
+    // 5. Retention: keep only the 6 most recent past months
+    const char* retention = R"(
+        DELETE FROM %s
+        WHERE user_id = $1::uuid
+          AND (EXTRACT(YEAR FROM CURRENT_DATE)::int * 12 + EXTRACT(MONTH FROM CURRENT_DATE)::int)
+              - (year * 12 + month) > 6
+    )";
+    char sql[512];
+    std::snprintf(sql, sizeof(sql), retention, "monthly_archives");
+    txn.exec_params(sql, userUuid);
+    std::snprintf(sql, sizeof(sql), retention, "monthly_report_csv");
+    txn.exec_params(sql, userUuid);
 }
 
 } // namespace budgie

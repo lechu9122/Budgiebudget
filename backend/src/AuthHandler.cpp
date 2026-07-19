@@ -179,8 +179,25 @@ std::optional<std::string> validateTokenUuid(const std::string& authHeader,
     auto subject = validateTokenUuid(authHeader, jwtSecret);
     if (!subject) return std::nullopt;
 
-    // Already a valid UUID — use directly
-    if (isUuidFormat(*subject)) return subject;
+    // Valid UUID — but confirm the profile still exists, so stale tokens
+    // (e.g. from a wiped/switched database) get a clean 401 instead of
+    // foreign-key violations on every insert.
+    if (isUuidFormat(*subject)) {
+        try {
+            auto lock = db.connLock();
+            pqxx::work txn(db.conn());
+            pqxx::result r = txn.exec_params(
+                "SELECT 1 FROM profiles WHERE id = $1::uuid", *subject);
+            txn.commit();
+            if (!r.empty()) return subject;
+        } catch (const std::exception& e) {
+            std::cerr << "[AUTH] Profile lookup failed: " << e.what() << "\n";
+            return std::nullopt;
+        }
+        std::cerr << "[AUTH] Token subject '" << *subject
+                  << "' has no matching profile. Rejecting token.\n";
+        return std::nullopt;
+    }
 
     // Legacy numeric subject — resolve via user_subject_map
     std::cerr << "[AUTH] Non-UUID subject '" << *subject

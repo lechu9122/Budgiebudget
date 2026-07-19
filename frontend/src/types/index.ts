@@ -88,6 +88,21 @@ export interface IncomeSource {
   frequency: string;
 }
 
+/** One category line of an archived monthly report card. */
+export interface ReportArchiveCategory {
+  category_name: string;
+  total_spent: number;
+  max_budget: number;
+}
+
+/** An archived monthly report card (max 6 past months are kept). */
+export interface ReportArchiveMonth {
+  year: number;
+  month: number;
+  has_csv: boolean;
+  categories: ReportArchiveCategory[];
+}
+
 /** Represents a transaction (actual spending) with category_id reference. */
 export interface Transaction {
   id: string;

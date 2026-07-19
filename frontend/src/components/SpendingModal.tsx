@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import Modal from './Modal';
+import CategoryDonut, { buildSlices, type DonutSlice } from './CategoryDonut';
 import type { Transaction } from '../types';
 
 interface SpendingModalProps {
@@ -9,68 +10,6 @@ interface SpendingModalProps {
   periodLabel: string;
   onClose: () => void;
 }
-
-// Categorical palette, fixed assignment order (validated: lightness band,
-// chroma floor, CVD separation, contrast — all pass on light surface).
-const SLICE_COLORS = ['#7c3aed', '#b45309', '#0d9488', '#be185d', '#2563eb', '#15803d'];
-const MAX_SLICES = SLICE_COLORS.length;
-
-interface Slice {
-  name: string;
-  amount: number;
-  fraction: number;
-  color: string;
-}
-
-/** Donut of spending by category with a 2px surface gap between slices. */
-const SpendingDonut: React.FC<{ slices: Slice[]; total: number }> = ({ slices, total }) => {
-  const size = 200;
-  const strokeWidth = 20;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const gap = slices.length > 1 ? 2 : 0;
-
-  let offset = 0;
-  const arcs = slices.map((slice) => {
-    const length = Math.max(slice.fraction * circumference - gap, 0);
-    const arc = { ...slice, length, offset };
-    offset += slice.fraction * circumference;
-    return arc;
-  });
-
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      role="img"
-      aria-label={`Total spent $${total.toFixed(2)} across ${slices.length} categories`}
-    >
-      {arcs.map((arc) => (
-        <circle
-          key={arc.name}
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke={arc.color}
-          strokeWidth={strokeWidth}
-          strokeDasharray={`${arc.length} ${circumference}`}
-          strokeDashoffset={-arc.offset}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        >
-          <title>{`${arc.name}: $${arc.amount.toFixed(2)} (${(arc.fraction * 100).toFixed(1)}%)`}</title>
-        </circle>
-      ))}
-      <text x="50%" y="46%" textAnchor="middle" className="fill-gray-900" fontSize="22" fontWeight="700">
-        ${total.toFixed(2)}
-      </text>
-      <text x="50%" y="57%" textAnchor="middle" className="fill-gray-500" fontSize="12">
-        total spent
-      </text>
-    </svg>
-  );
-};
 
 /**
  * Focus window breaking down where money went: a pie of spending by category
@@ -82,29 +21,13 @@ const SpendingModal: React.FC<SpendingModalProps> = ({ isOpen, transactions, per
     [transactions]
   );
 
-  const slices = useMemo((): Slice[] => {
+  const slices = useMemo((): DonutSlice[] => {
     const byCategory = new Map<string, number>();
     transactions.forEach((t) => {
       const name = t.category_name || 'Uncategorised';
       byCategory.set(name, (byCategory.get(name) || 0) + t.amount);
     });
-
-    const sorted = Array.from(byCategory.entries()).sort((a, b) => b[1] - a[1]);
-
-    // Fixed hue order; categories beyond the palette fold into "Other".
-    const top = sorted.slice(0, MAX_SLICES - 1);
-    const rest = sorted.slice(MAX_SLICES - 1);
-    const entries: Array<[string, number]> =
-      rest.length > 1
-        ? [...top, ['Other', rest.reduce((s, [, v]) => s + v, 0)] as [string, number]]
-        : sorted;
-
-    return entries.map(([name, amount], i) => ({
-      name,
-      amount,
-      fraction: total > 0 ? amount / total : 0,
-      color: SLICE_COLORS[i],
-    }));
+    return buildSlices(Array.from(byCategory.entries()), total);
   }, [transactions, total]);
 
   const sortedTransactions = useMemo(
@@ -128,7 +51,7 @@ const SpendingModal: React.FC<SpendingModalProps> = ({ isOpen, transactions, per
         <>
           {/* Pie + legend */}
           <div className="flex flex-col items-center gap-4 md:flex-row md:items-start md:justify-center">
-            <SpendingDonut slices={slices} total={total} />
+            <CategoryDonut slices={slices} total={total} />
             <ul className="w-full max-w-xs space-y-2 md:mt-4">
               {slices.map((slice) => (
                 <li key={slice.name} className="flex items-center justify-between text-sm">

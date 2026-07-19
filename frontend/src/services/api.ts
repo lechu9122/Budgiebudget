@@ -10,6 +10,7 @@ import type {
   IncomeSource,
   OnboardingPayload,
   OnboardingResponse,
+  ReportArchiveMonth,
 } from '../types';
 
 declare const process: {
@@ -139,6 +140,25 @@ export const getIncome = async (): Promise<IncomeSource[]> => {
 /** Replace the user's income sources. */
 export const saveIncome = async (income: IncomeSource[]): Promise<void> => {
   await apiClient.post('/api/income', { income });
+};
+
+// ==========================================
+// Monthly Report Endpoints
+// ==========================================
+/** Past monthly report cards (triggers month-start archival server-side). */
+export const getReportArchives = async (): Promise<ReportArchiveMonth[]> => {
+  const response = await apiClient.get<ReportArchiveMonth[]>('/api/reports/archives');
+  return response.data;
+};
+
+/** Stored CSV export of an archived month's raw expenses. */
+export const getReportCsv = async (year: number, month: number): Promise<string> => {
+  const response = await apiClient.get<string>('/api/reports/csv', {
+    params: { year, month },
+    responseType: 'text',
+    transformResponse: [(data) => data],
+  });
+  return response.data;
 };
 
 // ==========================================

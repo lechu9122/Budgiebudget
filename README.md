@@ -81,7 +81,7 @@ Budgiebudget/
 | Node.js | ≥ 18 |
 | CMake | ≥ 3.16 |
 | C++ compiler | GCC ≥ 11 or Clang ≥ 14 |
-| PostgreSQL | ≥ 15 (`brew install postgresql@17` / `apt install postgresql`) |
+| PostgreSQL | ≥ 15 (`brew install postgresql@18` / `apt install postgresql`) |
 | libpqxx dev headers | `brew install libpqxx` / `apt install libpqxx-dev libpq-dev` |
 | OpenSSL dev headers | `brew install openssl` / `apt install libssl-dev` |
 
@@ -92,7 +92,7 @@ The app runs against **any PostgreSQL server** — local by default, hosted (e.g
 **Local (default):**
 
 ```bash
-brew services start postgresql@17   # macOS; on Linux: sudo service postgresql start
+brew services start postgresql@18   # macOS; on Linux: sudo service postgresql start
 createdb budgie
 ```
 

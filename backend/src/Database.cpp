@@ -93,6 +93,18 @@ CREATE TABLE IF NOT EXISTS income_sources (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- Stored CSV export of each archived month's raw expenses (small text blob;
+-- the raw transactions are deleted after archival to keep storage compact)
+CREATE TABLE IF NOT EXISTS monthly_report_csv (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  year INTEGER NOT NULL,
+  month INTEGER CHECK (month >= 1 AND month <= 12) NOT NULL,
+  csv TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(user_id, year, month)
+);
+
 -- Monthly archives table
 CREATE TABLE IF NOT EXISTS monthly_archives (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -200,6 +212,7 @@ CREATE INDEX IF NOT EXISTS idx_budget_items_date ON budget_items(date);
 CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_income_sources_user_id ON income_sources(user_id);
+CREATE INDEX IF NOT EXISTS idx_monthly_report_csv_user ON monthly_report_csv(user_id, year, month);
 CREATE INDEX IF NOT EXISTS idx_monthly_archives_user_id ON monthly_archives(user_id, year, month);
 
 -- Seed default global categories (user_id NULL = available to every user).

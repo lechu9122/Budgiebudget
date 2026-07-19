@@ -112,13 +112,18 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout, o
       {/* Top Navigation Bar */}
       <nav className="sticky top-0 z-[60] border-b border-gray-200 bg-white shadow-sm">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-          {/* Logo - Left */}
-          <div className="flex items-center gap-2">
+          {/* Logo - Left (click to go home) */}
+          <button
+            type="button"
+            onClick={() => onNavigate?.('dashboard')}
+            className="flex items-center gap-2 rounded-lg px-1 py-1 transition hover:bg-gray-50"
+            title="Go to dashboard"
+          >
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-primary-50 via-white to-primary-100">
               <span className="text-2xl">🦜</span>
             </div>
             <span className="text-xl font-bold text-gray-900">BudgieBudget</span>
-          </div>
+          </button>
 
           {/* User Avatar with Dropdown - Right */}
           <div className="relative" ref={profileMenuRef}>

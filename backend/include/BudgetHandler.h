@@ -24,8 +24,12 @@ void registerBudgetRoutes(httplib::Server& svr, Database& db,
                           const std::string& jwtSecret);
 
 /**
- * Archives transactions at month-end and resets monthly spending counters
+ * Month-start housekeeping for one user, run inside the caller's transaction:
+ * aggregates each completed month's transactions into monthly_archives
+ * ("report cards"), stores a CSV export of the raw expense lines, deletes the
+ * raw transactions and stale allocations to keep storage compact, and purges
+ * report cards older than 6 past months.
  */
-void performMonthlyRollover(Database& db, long long userId);
+void performMonthlyRollover(pqxx::work& txn, const std::string& userUuid);
 
 } // namespace budgie

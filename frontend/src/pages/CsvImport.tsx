@@ -1,14 +1,22 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import MainLayout from '../components/MainLayout';
-import { getCategories, createTransaction } from '../services/api';
-import type { Category } from '../types';
-
-interface ParsedRow {
-  date: string;
-  description: string;
-  amount: number;
-  category_id: string;
-}
+import {
+  getCategories,
+  getIncome,
+  saveIncome,
+  createTransaction,
+  createCategory,
+  getApiErrorMessage,
+} from '../services/api';
+import {
+  parseCsvStatement,
+  parsePdfStatement,
+  groupLines,
+  guessFrequency,
+  type StatementLine,
+  type StatementGroup,
+} from '../utils/statementParser';
+import type { Category, IncomeSource } from '../types';
 
 interface CsvImportProps {
   username: string;
@@ -16,146 +24,236 @@ interface CsvImportProps {
   onNavigate: (page: 'dashboard' | 'csv-import' | 'reports' | 'profile') => void;
 }
 
-/** Split a single CSV line, honouring double-quoted fields. */
-const splitCsvLine = (line: string): string[] => {
-  const fields: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === ',' && !inQuotes) {
-      fields.push(current.trim());
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  fields.push(current.trim());
-  return fields;
-};
+const FREQUENCIES = ['Weekly', 'Fortnightly', 'Monthly', 'Yearly', 'One-off'];
 
-const parseCsv = (text: string): { rows: ParsedRow[]; error: string | null } => {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) {
-    return { rows: [], error: 'CSV must have a header row and at least one data row.' };
-  }
+interface IncomeGroupState extends StatementGroup {
+  include: boolean;
+  streamName: string;
+  frequency: string;
+  typicalAmount: number;
+  alreadyExists: boolean;
+}
 
-  const header = splitCsvLine(lines[0]).map((h) => h.toLowerCase());
-  const dateIdx = header.indexOf('date');
-  const descIdx = header.indexOf('description');
-  const amountIdx = header.indexOf('amount');
-  if (dateIdx === -1 || descIdx === -1 || amountIdx === -1) {
-    return { rows: [], error: 'CSV header must contain Date, Description and Amount columns.' };
-  }
-
-  const rows: ParsedRow[] = [];
-  for (const line of lines.slice(1)) {
-    const fields = splitCsvLine(line);
-    const date = fields[dateIdx] || '';
-    const description = fields[descIdx] || '';
-    const amount = Math.abs(parseFloat((fields[amountIdx] || '').replace(/[$,]/g, '')));
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(amount)) continue;
-    rows.push({ date, description, amount, category_id: '' });
-  }
-
-  if (rows.length === 0) {
-    return { rows: [], error: 'No valid rows found. Check dates are YYYY-MM-DD and amounts are numeric.' };
-  }
-  return { rows, error: null };
-};
+interface ExpenseGroupState extends StatementGroup {
+  include: boolean;
+  categoryId: string;
+}
 
 const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate }) => {
   const [file, setFile] = useState<File | null>(null);
-  const [parsedData, setParsedData] = useState<ParsedRow[]>([]);
+  const [parsing, setParsing] = useState(false);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
   const [categories, setCategories] = useState<Category[]>([]);
-  const [parseError, setParseError] = useState<string | null>(null);
+  const [existingIncome, setExistingIncome] = useState<IncomeSource[]>([]);
+
+  const [incomeGroups, setIncomeGroups] = useState<IncomeGroupState[]>([]);
+  const [expenseGroups, setExpenseGroups] = useState<ExpenseGroupState[]>([]);
   const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<string | null>(null);
 
   useEffect(() => {
-    getCategories()
-      .then(setCategories)
-      .catch((err) => console.error('Failed to load categories:', err));
+    Promise.all([getCategories(), getIncome()])
+      .then(([cats, inc]) => {
+        setCategories(cats);
+        setExistingIncome(inc);
+      })
+      .catch((err) => console.error('Failed to load categories/income:', err));
   }, []);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const otherCategoryId = useMemo(
+    () => categories.find((c) => c.name === 'Other')?.id || '',
+    [categories]
+  );
+
+  // ------------------------------------------------------------------
+  // Classification: credits -> income streams, debits -> expense groups
+  // ------------------------------------------------------------------
+  const toIncomeGroup = (g: StatementGroup): IncomeGroupState => {
+    const latest = [...g.lines].sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+    const alreadyExists = existingIncome.some(
+      (s) => s.name.trim().toLowerCase() === g.name.trim().toLowerCase()
+    );
+    return {
+      ...g,
+      include: !alreadyExists,
+      // Drop trailing reference numbers from the default stream name
+      streamName: g.name.replace(/[\s\-#*]*[\dx]+$/i, '').trim() || g.name,
+      frequency: guessFrequency(g.lines.map((l) => l.date)),
+      typicalAmount: latest.amount,
+      alreadyExists,
+    };
+  };
+
+  const toExpenseGroup = (g: StatementGroup): ExpenseGroupState => ({
+    ...g,
+    include: true,
+    // Recurring expenses need the user's category choice; one-timers
+    // default to "Other" as a one-off note.
+    categoryId: g.lines.length > 1 ? '' : otherCategoryId,
+  });
+
+  const classify = (lines: StatementLine[]) => {
+    setIncomeGroups(groupLines(lines.filter((l) => l.kind === 'credit')).map(toIncomeGroup));
+    setExpenseGroups(groupLines(lines.filter((l) => l.kind === 'debit')).map(toExpenseGroup));
+  };
+
+  const moveGroupToExpenses = (key: string) => {
+    const g = incomeGroups.find((x) => x.key === key);
+    if (!g) return;
+    setIncomeGroups((prev) => prev.filter((x) => x.key !== key));
+    setExpenseGroups((prev) => [...prev, toExpenseGroup(g)]);
+  };
+
+  const moveGroupToIncome = (key: string) => {
+    const g = expenseGroups.find((x) => x.key === key);
+    if (!g) return;
+    setExpenseGroups((prev) => prev.filter((x) => x.key !== key));
+    setIncomeGroups((prev) => [...prev, toIncomeGroup(g)]);
+  };
+
+  // ------------------------------------------------------------------
+  // Upload & parse
+  // ------------------------------------------------------------------
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files && e.target.files[0];
     if (!selected) return;
     setFile(selected);
-    setImportResult(null);
+    setResult(null);
+    setError(null);
+    setWarnings([]);
+    setIncomeGroups([]);
+    setExpenseGroups([]);
+    setParsing(true);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const { rows, error } = parseCsv(String(reader.result || ''));
-      setParsedData(rows);
-      setParseError(error);
-    };
-    reader.readAsText(selected);
+    try {
+      const isPdf =
+        selected.type === 'application/pdf' || selected.name.toLowerCase().endsWith('.pdf');
+      const parsed = isPdf
+        ? await parsePdfStatement(selected)
+        : parseCsvStatement(await selected.text());
+
+      setWarnings(parsed.warnings);
+      if (parsed.lines.length === 0 && parsed.warnings.length === 0) {
+        setError('No transactions found in this file.');
+      }
+      classify(parsed.lines);
+    } catch (err) {
+      console.error('Statement parsing failed:', err);
+      setError('Could not read this file. Try a CSV export from your bank.');
+    } finally {
+      setParsing(false);
+    }
   };
 
-  const setRowCategory = (index: number, categoryId: string) => {
-    setParsedData((prev) =>
-      prev.map((row, i) => (i === index ? { ...row, category_id: categoryId } : row))
-    );
-  };
-
-  const rowsReady = parsedData.filter((r) => r.category_id).length;
+  // ------------------------------------------------------------------
+  // Import
+  // ------------------------------------------------------------------
+  const recurringMissingCategory = expenseGroups.filter(
+    (g) => g.include && g.lines.length > 1 && !g.categoryId
+  ).length;
 
   const handleImport = async () => {
     setImporting(true);
-    setImportResult(null);
+    setError(null);
+    setResult(null);
     try {
-      const toImport = parsedData.filter((r) => r.category_id);
-      let imported = 0;
-      for (const row of toImport) {
-        await createTransaction({
-          category_id: row.category_id,
-          description: row.description,
-          amount: row.amount,
-          date: row.date,
-        });
-        imported++;
+      // 1. Income streams: append the ticked ones to the saved income sources
+      const newStreams = incomeGroups.filter((g) => g.include && g.typicalAmount > 0);
+      if (newStreams.length > 0) {
+        await saveIncome([
+          ...existingIncome,
+          ...newStreams.map((g) => ({
+            name: g.streamName.trim() || g.name,
+            amount: g.typicalAmount,
+            frequency: g.frequency,
+          })),
+        ]);
       }
-      setImportResult(`Imported ${imported} transaction${imported === 1 ? '' : 's'} successfully.`);
+
+      // 2. Expenses: every line of every included group becomes a transaction
+      let imported = 0;
+      for (const g of expenseGroups) {
+        if (!g.include || !g.categoryId) continue;
+        for (const line of g.lines) {
+          await createTransaction({
+            category_id: g.categoryId,
+            description: line.description,
+            amount: line.amount,
+            date: line.date,
+          });
+          imported++;
+        }
+      }
+
+      setResult(
+        `Imported ${imported} expense${imported === 1 ? '' : 's'}` +
+          (newStreams.length > 0
+            ? ` and ${newStreams.length} income stream${newStreams.length === 1 ? '' : 's'}`
+            : '') +
+          '.'
+      );
       setFile(null);
-      setParsedData([]);
-    } catch (error) {
-      console.error('Import failed:', error);
-      setImportResult('Import failed part-way through. Check the dashboard and try the remaining rows again.');
+      setIncomeGroups([]);
+      setExpenseGroups([]);
+      setExistingIncome(await getIncome());
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Import failed part-way through. Check the dashboard before retrying.'));
     } finally {
       setImporting(false);
     }
   };
 
+  const handleNewCategory = async (key: string) => {
+    const name = window.prompt('New category name:');
+    if (!name || !name.trim()) return;
+    try {
+      const cat = await createCategory(name.trim());
+      setCategories((prev) => [...prev, cat]);
+      setExpenseGroups((prev) =>
+        prev.map((g) => (g.key === key ? { ...g, categoryId: cat.id } : g))
+      );
+    } catch (err) {
+      alert(getApiErrorMessage(err, 'Could not create the category.'));
+    }
+  };
+
+  const recurring = expenseGroups.filter((g) => g.lines.length > 1);
+  const oneTime = expenseGroups.filter((g) => g.lines.length === 1);
+
   return (
     <MainLayout username={username} onLogout={onLogout} onNavigate={onNavigate}>
-      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="rounded-lg bg-white p-6 shadow">
-          <h2 className="mb-4 text-2xl font-bold text-gray-900">
-            Import Bank Statement (.csv)
-          </h2>
+          <h2 className="mb-4 text-2xl font-bold text-gray-900">Import Bank Statement</h2>
           <p className="mb-6 text-sm text-gray-500">
-            Upload your bank statement CSV file to automatically import transactions into your budget.
+            Upload a CSV or PDF bank statement. Deposits are detected as income streams
+            (named from the statement reference), recurring expenses are matched to your
+            categories, and one-time expenses are noted automatically.
           </p>
 
-          {importResult && (
+          {result && (
             <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-green-800">
-              {importResult}
+              {result}
             </div>
           )}
+          {error && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-700">
+              {error}
+            </div>
+          )}
+          {warnings.map((w) => (
+            <div key={w} className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {w}
+            </div>
+          ))}
 
-          {/* Upload Section */}
+          {/* Upload */}
           <div className="mb-6 rounded-lg border-2 border-dashed border-gray-300 p-8 text-center">
             <input
               type="file"
-              accept=".csv"
+              accept=".csv,.pdf,application/pdf,text/csv"
               onChange={handleFileUpload}
               className="block w-full text-sm text-gray-500 file:mr-4 file:rounded file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-blue-700 hover:file:bg-blue-100"
             />
@@ -164,82 +262,233 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
                 Selected: <span className="font-medium">{file.name}</span>
               </p>
             )}
+            {parsing && <p className="mt-2 text-sm text-blue-600">Reading statement…</p>}
           </div>
 
-          {parseError && (
-            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-700">
-              {parseError}
+          {/* Detected income streams */}
+          {incomeGroups.length > 0 && (
+            <div className="mb-8">
+              <h3 className="mb-1 text-lg font-semibold text-gray-900">Detected income</h3>
+              <p className="mb-3 text-sm text-gray-500">
+                Deposits grouped by statement reference. Ticked ones are saved as income
+                streams with the reference as their name.
+              </p>
+              <div className="space-y-2">
+                {incomeGroups.map((g) => (
+                  <div key={g.key} className="flex flex-wrap items-center gap-3 rounded-lg border border-green-200 bg-green-50/40 p-3">
+                    <input
+                      type="checkbox"
+                      checked={g.include}
+                      onChange={(e) =>
+                        setIncomeGroups((prev) =>
+                          prev.map((x) => (x.key === g.key ? { ...x, include: e.target.checked } : x))
+                        )
+                      }
+                      className="h-4 w-4 accent-green-600"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <input
+                        type="text"
+                        value={g.streamName}
+                        onChange={(e) =>
+                          setIncomeGroups((prev) =>
+                            prev.map((x) => (x.key === g.key ? { ...x, streamName: e.target.value } : x))
+                          )
+                        }
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-sm font-medium"
+                      />
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        {g.lines.length} deposit{g.lines.length === 1 ? '' : 's'} • total ${g.total.toFixed(2)}
+                        {g.alreadyExists && (
+                          <span className="ml-2 rounded bg-gray-200 px-1.5 py-0.5 text-gray-600">
+                            already an income stream
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={g.typicalAmount || ''}
+                      onChange={(e) =>
+                        setIncomeGroups((prev) =>
+                          prev.map((x) =>
+                            x.key === g.key ? { ...x, typicalAmount: parseFloat(e.target.value) || 0 } : x
+                          )
+                        )
+                      }
+                      className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
+                      title="Typical amount per deposit"
+                    />
+                    <select
+                      value={g.frequency}
+                      onChange={(e) =>
+                        setIncomeGroups((prev) =>
+                          prev.map((x) => (x.key === g.key ? { ...x, frequency: e.target.value } : x))
+                        )
+                      }
+                      className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    >
+                      {FREQUENCIES.map((f) => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => moveGroupToExpenses(g.key)}
+                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+                      title="This isn't income"
+                    >
+                      Treat as expense
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
-          {/* Data Preview */}
-          {file && parsedData.length > 0 && (
-            <div>
-              <h3 className="mb-2 text-lg font-semibold text-gray-900">
-                Preview (Assign Categories)
-              </h3>
-              <p className="mb-2 text-sm text-gray-500">
-                Rows without a category are skipped. {rowsReady} of {parsedData.length} rows ready.
+          {/* Recurring expenses */}
+          {recurring.length > 0 && (
+            <div className="mb-8">
+              <h3 className="mb-1 text-lg font-semibold text-gray-900">Recurring expenses</h3>
+              <p className="mb-3 text-sm text-gray-500">
+                These appear more than once — pick which of your categories each belongs to.
               </p>
-              <div className="mb-4 min-h-[200px] rounded border border-gray-200 bg-gray-50 p-4">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="border-b border-gray-300 bg-gray-100">
-                      <tr>
-                        <th className="px-4 py-2">Date</th>
-                        <th className="px-4 py-2">Description</th>
-                        <th className="px-4 py-2">Amount</th>
-                        <th className="px-4 py-2">Category</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {parsedData.map((row, index) => (
-                        <tr key={index} className="border-b border-gray-200">
-                          <td className="px-4 py-2">{row.date}</td>
-                          <td className="px-4 py-2">{row.description}</td>
-                          <td className="px-4 py-2">${row.amount.toFixed(2)}</td>
-                          <td className="px-4 py-2">
-                            <select
-                              value={row.category_id}
-                              onChange={(e) => setRowCategory(index, e.target.value)}
-                              className="rounded border border-gray-300 px-2 py-1 text-sm"
-                            >
-                              <option value="">Select Category...</option>
-                              {categories.map((cat) => (
-                                <option key={cat.id} value={cat.id}>
-                                  {cat.name}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                        </tr>
+              <div className="space-y-2">
+                {recurring.map((g) => (
+                  <div key={g.key} className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 p-3">
+                    <input
+                      type="checkbox"
+                      checked={g.include}
+                      onChange={(e) =>
+                        setExpenseGroups((prev) =>
+                          prev.map((x) => (x.key === g.key ? { ...x, include: e.target.checked } : x))
+                        )
+                      }
+                      className="h-4 w-4 accent-primary-600"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-gray-900">{g.name}</p>
+                      <p className="text-xs text-gray-500">
+                        {g.lines.length} times • total ${g.total.toFixed(2)}
+                      </p>
+                    </div>
+                    <select
+                      value={g.categoryId}
+                      onChange={(e) =>
+                        setExpenseGroups((prev) =>
+                          prev.map((x) => (x.key === g.key ? { ...x, categoryId: e.target.value } : x))
+                        )
+                      }
+                      className={`rounded border px-2 py-1 text-sm ${
+                        g.include && !g.categoryId ? 'border-amber-400 bg-amber-50' : 'border-gray-300'
+                      }`}
+                    >
+                      <option value="">Choose category…</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => handleNewCategory(g.key)}
+                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+                    >
+                      + New
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveGroupToIncome(g.key)}
+                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+                      title="This is actually income"
+                    >
+                      Treat as income
+                    </button>
+                  </div>
+                ))}
               </div>
+            </div>
+          )}
 
-              <div className="flex justify-end">
-                <button
-                  onClick={handleImport}
-                  disabled={importing || rowsReady === 0}
-                  className="rounded bg-blue-600 px-4 py-2 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {importing ? 'Importing...' : `Save ${rowsReady} to Ledger`}
-                </button>
+          {/* One-time expenses */}
+          {oneTime.length > 0 && (
+            <div className="mb-8">
+              <h3 className="mb-1 text-lg font-semibold text-gray-900">One-time expenses</h3>
+              <p className="mb-3 text-sm text-gray-500">
+                Seen once on this statement — noted as one-off expenses (category "Other"
+                unless you change it).
+              </p>
+              <div className="max-h-72 space-y-1 overflow-y-auto rounded border border-gray-100 p-2">
+                {oneTime.map((g) => (
+                  <div key={g.key} className="flex items-center gap-3 rounded px-2 py-1.5 text-sm hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={g.include}
+                      onChange={(e) =>
+                        setExpenseGroups((prev) =>
+                          prev.map((x) => (x.key === g.key ? { ...x, include: e.target.checked } : x))
+                        )
+                      }
+                      className="h-4 w-4 accent-primary-600"
+                    />
+                    <span className="w-24 shrink-0 text-xs text-gray-500">{g.lines[0].date}</span>
+                    <span className="min-w-0 flex-1 truncate text-gray-800">{g.name}</span>
+                    <span className="shrink-0 font-medium text-gray-900">${g.total.toFixed(2)}</span>
+                    <select
+                      value={g.categoryId}
+                      onChange={(e) =>
+                        setExpenseGroups((prev) =>
+                          prev.map((x) => (x.key === g.key ? { ...x, categoryId: e.target.value } : x))
+                        )
+                      }
+                      className="rounded border border-gray-300 px-2 py-1 text-xs"
+                    >
+                      <option value="">Skip</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => moveGroupToIncome(g.key)}
+                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+                    >
+                      Income?
+                    </button>
+                  </div>
+                ))}
               </div>
+            </div>
+          )}
+
+          {/* Import action */}
+          {(incomeGroups.length > 0 || expenseGroups.length > 0) && (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-gray-500">
+                {recurringMissingCategory > 0
+                  ? `${recurringMissingCategory} recurring expense group(s) still need a category.`
+                  : 'Ready to import.'}
+              </p>
+              <button
+                type="button"
+                onClick={handleImport}
+                disabled={importing || recurringMissingCategory > 0}
+                className="rounded-lg bg-blue-600 px-5 py-2.5 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {importing ? 'Importing…' : 'Import to BudgieBudget'}
+              </button>
             </div>
           )}
 
           {/* Instructions */}
-          {!file && (
+          {!file && incomeGroups.length === 0 && expenseGroups.length === 0 && (
             <div className="mt-6 rounded-lg bg-blue-50 p-4">
-              <h4 className="mb-2 font-semibold text-blue-900">CSV Format Requirements:</h4>
+              <h4 className="mb-2 font-semibold text-blue-900">Supported files:</h4>
               <ul className="list-inside list-disc space-y-1 text-sm text-blue-800">
-                <li>File must contain columns: Date, Description, Amount</li>
-                <li>Date format: YYYY-MM-DD (e.g., 2026-03-07)</li>
-                <li>Amount should be positive numbers (e.g., 50.00)</li>
-                <li>CSV should have a header row</li>
+                <li><strong>CSV</strong> — with Date, Description and Amount columns (or separate Debit/Credit columns). Negative amounts are treated as money out.</li>
+                <li><strong>PDF</strong> — text-based bank statements (best effort; scanned images are not supported).</li>
+                <li>Dates in YYYY-MM-DD, DD/MM/YYYY or "12 Jun 2026" formats.</li>
               </ul>
             </div>
           )}
