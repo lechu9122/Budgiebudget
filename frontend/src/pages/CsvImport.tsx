@@ -21,7 +21,6 @@ import type { Category, IncomeSource } from '../types';
 interface CsvImportProps {
   username: string;
   onLogout: () => void;
-  onNavigate: (page: 'dashboard' | 'csv-import' | 'reports' | 'profile') => void;
 }
 
 const FREQUENCIES = ['Weekly', 'Fortnightly', 'Monthly', 'Yearly', 'One-off'];
@@ -37,9 +36,11 @@ interface IncomeGroupState extends StatementGroup {
 interface ExpenseGroupState extends StatementGroup {
   include: boolean;
   categoryId: string;
+  /** What this payment actually is — saved as the transaction description. */
+  label: string;
 }
 
-const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate }) => {
+const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout }) => {
   const [file, setFile] = useState<File | null>(null);
   const [parsing, setParsing] = useState(false);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -78,8 +79,8 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
     return {
       ...g,
       include: !alreadyExists,
-      // Drop trailing reference numbers from the default stream name
-      streamName: g.name.replace(/[\s\-#*]*[\dx]+$/i, '').trim() || g.name,
+      // g.name is already the cleaned reference (card masks / refs stripped)
+      streamName: g.name,
       frequency: guessFrequency(g.lines.map((l) => l.date)),
       typicalAmount: latest.amount,
       alreadyExists,
@@ -92,6 +93,8 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
     // Recurring expenses need the user's category choice; one-timers
     // default to "Other" as a one-off note.
     categoryId: g.lines.length > 1 ? '' : otherCategoryId,
+    // g.name is the cleaned reference (card masks / refs stripped)
+    label: g.name,
   });
 
   const classify = (lines: StatementLine[]) => {
@@ -179,7 +182,7 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
         for (const line of g.lines) {
           await createTransaction({
             category_id: g.categoryId,
-            description: line.description,
+            description: g.label.trim() || g.name,
             amount: line.amount,
             date: line.date,
           });
@@ -223,7 +226,7 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
   const oneTime = expenseGroups.filter((g) => g.lines.length === 1);
 
   return (
-    <MainLayout username={username} onLogout={onLogout} onNavigate={onNavigate}>
+    <MainLayout username={username} onLogout={onLogout}>
       <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="rounded-lg bg-white p-6 shadow">
           <h2 className="mb-4 text-2xl font-bold text-gray-900">Import Bank Statement</h2>
@@ -353,7 +356,9 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
             <div className="mb-8">
               <h3 className="mb-1 text-lg font-semibold text-gray-900">Recurring expenses</h3>
               <p className="mb-3 text-sm text-gray-500">
-                These appear more than once — pick which of your categories each belongs to.
+                These appear more than once — name what each one is and pick which of your
+                categories it belongs to. Card numbers and reference codes are stripped out,
+                so rename anything that came through as "Card payment".
               </p>
               <div className="space-y-2">
                 {recurring.map((g) => (
@@ -369,8 +374,18 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
                       className="h-4 w-4 accent-primary-600"
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-gray-900">{g.name}</p>
-                      <p className="text-xs text-gray-500">
+                      <input
+                        type="text"
+                        value={g.label}
+                        onChange={(e) =>
+                          setExpenseGroups((prev) =>
+                            prev.map((x) => (x.key === g.key ? { ...x, label: e.target.value } : x))
+                          )
+                        }
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-sm font-medium"
+                        title="What is this payment? Saved as the expense description."
+                      />
+                      <p className="mt-0.5 text-xs text-gray-500">
                         {g.lines.length} times • total ${g.total.toFixed(2)}
                       </p>
                     </div>
@@ -417,7 +432,7 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
               <h3 className="mb-1 text-lg font-semibold text-gray-900">One-time expenses</h3>
               <p className="mb-3 text-sm text-gray-500">
                 Seen once on this statement — noted as one-off expenses (category "Other"
-                unless you change it).
+                unless you change it). Rename any that came through as "Card payment".
               </p>
               <div className="max-h-72 space-y-1 overflow-y-auto rounded border border-gray-100 p-2">
                 {oneTime.map((g) => (
@@ -433,7 +448,17 @@ const CsvImport: React.FC<CsvImportProps> = ({ username, onLogout, onNavigate })
                       className="h-4 w-4 accent-primary-600"
                     />
                     <span className="w-24 shrink-0 text-xs text-gray-500">{g.lines[0].date}</span>
-                    <span className="min-w-0 flex-1 truncate text-gray-800">{g.name}</span>
+                    <input
+                      type="text"
+                      value={g.label}
+                      onChange={(e) =>
+                        setExpenseGroups((prev) =>
+                          prev.map((x) => (x.key === g.key ? { ...x, label: e.target.value } : x))
+                        )
+                      }
+                      className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm text-gray-800"
+                      title="What is this payment? Saved as the expense description."
+                    />
                     <span className="shrink-0 font-medium text-gray-900">${g.total.toFixed(2)}</span>
                     <select
                       value={g.categoryId}

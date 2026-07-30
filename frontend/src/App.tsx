@@ -106,9 +106,6 @@ const App: React.FC = () => {
               <Profile
                 username={localStorage.getItem('username') || 'User'}
                 onLogout={handleLogout}
-                onNavigate={(page) => {
-                  // Navigation handled by React Router
-                }}
               />
             ) : (
               <Navigate to="/login" replace />
@@ -123,9 +120,6 @@ const App: React.FC = () => {
               <CsvImport
                 username={localStorage.getItem('username') || 'User'}
                 onLogout={handleLogout}
-                onNavigate={(page) => {
-                  // Navigation handled by React Router
-                }}
               />
             ) : (
               <Navigate to="/login" replace />
@@ -140,9 +134,6 @@ const App: React.FC = () => {
               <Reports
                 username={localStorage.getItem('username') || 'User'}
                 onLogout={handleLogout}
-                onNavigate={(page) => {
-                  // Navigation handled by React Router
-                }}
               />
             ) : (
               <Navigate to="/login" replace />

@@ -1,11 +1,20 @@
 import React, { ReactNode, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { getAdvice } from '../services/api';
+
+export type NavPage = 'dashboard' | 'csv-import' | 'reports' | 'profile';
+
+const ROUTES: Record<NavPage, string> = {
+  dashboard: '/dashboard',
+  'csv-import': '/csv-import',
+  reports: '/reports',
+  profile: '/profile',
+};
 
 interface MainLayoutProps {
   children: ReactNode;
   username?: string;
   onLogout?: () => void;
-  onNavigate?: (page: 'dashboard' | 'csv-import' | 'reports' | 'profile') => void;
 }
 
 type ChatMessage = {
@@ -14,7 +23,9 @@ type ChatMessage = {
   content: string;
 };
 
-const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout, onNavigate }) => {
+const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout }) => {
+  const navigate = useNavigate();
+  const goTo = (page: NavPage) => navigate(ROUTES[page]);
   const [isAdvisorOpen, setIsAdvisorOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -115,7 +126,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout, o
           {/* Logo - Left (click to go home) */}
           <button
             type="button"
-            onClick={() => onNavigate?.('dashboard')}
+            onClick={() => goTo('dashboard')}
             className="flex items-center gap-2 rounded-lg px-1 py-1 transition hover:bg-gray-50"
             title="Go to dashboard"
           >
@@ -142,7 +153,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout, o
                 <button
                   onClick={() => {
                     setIsProfileMenuOpen(false);
-                    onNavigate?.('profile');
+                    goTo('profile');
                   }}
                   className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                 >
@@ -151,7 +162,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout, o
                 <button
                   onClick={() => {
                     setIsProfileMenuOpen(false);
-                    onNavigate?.('csv-import');
+                    goTo('csv-import');
                   }}
                   className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                 >
@@ -160,7 +171,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children, username, onLogout, o
                 <button
                   onClick={() => {
                     setIsProfileMenuOpen(false);
-                    onNavigate?.('reports');
+                    goTo('reports');
                   }}
                   className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                 >

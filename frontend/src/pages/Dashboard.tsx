@@ -1,5 +1,4 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 import MainLayout from '../components/MainLayout';
 import OnboardingWizard from '../components/OnboardingWizard';
 import ExpenseFormModal from '../components/ExpenseFormModal';
@@ -63,7 +62,6 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [detailCategoryName, setDetailCategoryName] = useState<string | null>(null);
   const [expenseInitialCategoryId, setExpenseInitialCategoryId] = useState<string | null>(null);
-  const navigate = useNavigate();
 
   const loadData = async () => {
     try {
@@ -127,8 +125,14 @@ const Dashboard: React.FC<DashboardProps> = ({
 
   // Category rows come from budget allocations ONLY — tracking an expense
   // never creates a new category tab.
+  // Savings is pinned first; the rest keep their allocation order.
   const categorySummaries = useMemo((): CategorySummary[] => {
-    return allocations.map((alloc) => {
+    const ordered = [...allocations].sort((a, b) => {
+      const aSavings = a.category_name === 'Savings' ? 0 : 1;
+      const bSavings = b.category_name === 'Savings' ? 0 : 1;
+      return aSavings - bSavings;
+    });
+    return ordered.map((alloc) => {
       const spent = monthTransactions
         .filter((t) => t.category_id === alloc.category_id || t.category_name === alloc.category_name)
         .reduce((sum, t) => sum + t.amount, 0);
@@ -195,21 +199,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   }
 
   return (
-    <MainLayout
-      username={username}
-      onLogout={onLogout}
-      onNavigate={(page) => {
-        const routes: { [key: string]: string } = {
-          'dashboard': '/dashboard',
-          'csv-import': '/csv-import',
-          'reports': '/reports',
-          'profile': '/profile'
-        };
-        if (routes[page]) {
-          navigate(routes[page]);
-        }
-      }}
-    >
+    <MainLayout username={username} onLogout={onLogout}>
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {/* Error Message */}
         {error && (

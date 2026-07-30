@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import MainLayout from '../components/MainLayout';
 import CategoryDonut, { buildSlices } from '../components/CategoryDonut';
-import MonthlyComparisonChart, { type MonthTotals } from '../components/MonthlyComparisonChart';
+import MonthlyComparisonChart from '../components/MonthlyComparisonChart';
 import {
   getAllocations,
   getTransactions,
@@ -10,6 +10,15 @@ import {
   getApiErrorMessage,
 } from '../services/api';
 import type { BudgetAllocationView, ReportArchiveMonth, Transaction } from '../types';
+import {
+  buildMonthSeries,
+  computeTrend,
+  monthLabel,
+  recentArchives,
+  CURRENT_KEY,
+  CURRENT_MONTH,
+  CURRENT_YEAR,
+} from '../utils/analytics';
 
 interface CategoryBreakdown {
   category_name: string;
@@ -21,19 +30,7 @@ interface CategoryBreakdown {
 interface ReportsProps {
   username: string;
   onLogout: () => void;
-  onNavigate: (page: 'dashboard' | 'csv-import' | 'reports' | 'profile') => void;
 }
-
-const monthLabel = (year: number, month: number, style: 'short' | 'long' = 'long') =>
-  new Date(year, month - 1, 1).toLocaleDateString('en-US', {
-    month: style === 'long' ? 'long' : 'short',
-    ...(style === 'long' ? { year: 'numeric' } : {}),
-  });
-
-const now = new Date();
-const CURRENT_YEAR = now.getFullYear();
-const CURRENT_MONTH = now.getMonth() + 1;
-const CURRENT_KEY = `${CURRENT_YEAR}-${String(CURRENT_MONTH).padStart(2, '0')}`;
 
 const downloadFile = (filename: string, content: string, mime: string) => {
   const blob = new Blob([content], { type: mime });
@@ -45,7 +42,10 @@ const downloadFile = (filename: string, content: string, mime: string) => {
   URL.revokeObjectURL(url);
 };
 
-const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => {
+/** Quote a CSV field per RFC 4180. */
+const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+
+const Reports: React.FC<ReportsProps> = ({ username, onLogout }) => {
   const [archives, setArchives] = useState<ReportArchiveMonth[]>([]);
   const [allocations, setAllocations] = useState<BudgetAllocationView[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -73,13 +73,15 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
     })();
   }, []);
 
+  const pastMonths = useMemo(() => recentArchives(archives), [archives]);
+
   // ---- Selected month breakdown -------------------------------------------
   const selectedArchive = useMemo(
     () =>
       selected === 'current'
         ? null
-        : archives.find((a) => `${a.year}-${a.month}` === selected) || null,
-    [selected, archives]
+        : pastMonths.find((a) => `${a.year}-${a.month}` === selected) || null,
+    [selected, pastMonths]
   );
 
   const breakdown = useMemo((): CategoryBreakdown[] => {
@@ -120,6 +122,11 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
   const totalSpent = breakdown.reduce((s, c) => s + c.spent, 0);
   const netSavings = totalBudgeted - totalSpent;
 
+  const overspent = useMemo(
+    () => breakdown.filter((c) => c.budgeted > 0 && c.spent > c.budgeted),
+    [breakdown]
+  );
+
   const slices = useMemo(
     () =>
       buildSlices(
@@ -130,118 +137,149 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
   );
 
   // ---- Month-over-month comparison ----------------------------------------
-  const comparisonMonths = useMemo((): MonthTotals[] => {
-    const past = [...archives]
-      .sort((a, b) => a.year * 12 + a.month - (b.year * 12 + b.month))
-      .map((a) => ({
-        label: monthLabel(a.year, a.month, 'short'),
-        fullLabel: monthLabel(a.year, a.month),
-        budgeted: a.categories.reduce((s, c) => s + c.max_budget, 0),
-        spent: a.categories.reduce((s, c) => s + c.total_spent, 0),
-      }));
-    const currentBudgeted = allocations.reduce((s, a) => s + a.max_budget, 0);
-    const currentSpent = transactions.reduce((s, t) => s + t.amount, 0);
-    return [
-      ...past,
-      {
-        label: monthLabel(CURRENT_YEAR, CURRENT_MONTH, 'short'),
-        fullLabel: monthLabel(CURRENT_YEAR, CURRENT_MONTH),
-        budgeted: currentBudgeted,
-        spent: currentSpent,
-        isCurrent: true,
-      },
-    ];
-  }, [archives, allocations, transactions]);
+  const comparisonMonths = useMemo(
+    () => buildMonthSeries(archives, allocations, transactions),
+    [archives, allocations, transactions]
+  );
 
-  // ---- Trend analysis & prediction (simple linear projection) -------------
-  const trend = useMemo(() => {
-    const past = comparisonMonths.filter((m) => !m.isCurrent);
-    if (past.length < 2) return null;
+  // ---- Trend analysis & prediction ----------------------------------------
+  const trend = useMemo(() => computeTrend(comparisonMonths), [comparisonMonths]);
 
-    const ys = past.map((m) => m.spent);
-    const n = ys.length;
-    const xMean = (n - 1) / 2;
-    const yMean = ys.reduce((s, y) => s + y, 0) / n;
-    let cov = 0;
-    let variance = 0;
-    ys.forEach((y, x) => {
-      cov += (x - xMean) * (y - yMean);
-      variance += (x - xMean) ** 2;
-    });
-    const slope = variance > 0 ? cov / variance : 0;
-    const intercept = yMean - slope * xMean;
-    const prediction = Math.max(intercept + slope * n, 0);
-    const pctPerMonth = yMean > 0 ? (slope / yMean) * 100 : 0;
+  /** Biggest category movers between the two most recent archived months. */
+  const movers = useMemo(() => {
+    if (pastMonths.length < 2) return [];
+    const prev = pastMonths[pastMonths.length - 2];
+    const last = pastMonths[pastMonths.length - 1];
 
-    // Biggest category movers between the two most recent archived months
-    const [prev, last] = [
-      archives.find((a) => monthLabel(a.year, a.month, 'short') === past[past.length - 2].label),
-      archives.find((a) => monthLabel(a.year, a.month, 'short') === past[past.length - 1].label),
-    ];
-    let movers: Array<{ name: string; delta: number }> = [];
-    if (prev && last) {
-      const prevBy = new Map(prev.categories.map((c) => [c.category_name, c.total_spent]));
-      const names = new Set([
-        ...prev.categories.map((c) => c.category_name),
-        ...last.categories.map((c) => c.category_name),
-      ]);
-      movers = Array.from(names)
-        .map((name) => ({
-          name,
-          delta:
-            (last.categories.find((c) => c.category_name === name)?.total_spent || 0) -
-            (prevBy.get(name) || 0),
-        }))
-        .filter((m) => Math.abs(m.delta) >= 0.01)
-        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-        .slice(0, 3);
-    }
+    const prevBy = new Map(prev.categories.map((c) => [c.category_name, c.total_spent]));
+    const names = new Set([
+      ...prev.categories.map((c) => c.category_name),
+      ...last.categories.map((c) => c.category_name),
+    ]);
 
-    return { slope, prediction, pctPerMonth, monthsUsed: n, movers };
-  }, [comparisonMonths, archives]);
-
-  // ---- Exports -------------------------------------------------------------
-  const handleDownloadCsv = async () => {
-    try {
-      if (selectedArchive) {
-        const csv = await getReportCsv(selectedArchive.year, selectedArchive.month);
-        downloadFile(
-          `budgie-report-${selectedArchive.year}-${String(selectedArchive.month).padStart(2, '0')}.csv`,
-          csv,
-          'text/csv'
-        );
-      } else {
-        const header = 'Date,Category,Description,Amount\n';
-        const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
-        const body = [...transactions]
-          .sort((a, b) => (a.date < b.date ? -1 : 1))
-          .map((t) => `${t.date},${q(t.category_name || 'Uncategorised')},${q(t.description || '')},${t.amount.toFixed(2)}`)
-          .join('\n');
-        downloadFile(`budgie-report-${CURRENT_KEY}.csv`, header + body + '\n', 'text/csv');
-      }
-    } catch (err) {
-      alert(getApiErrorMessage(err, 'Could not download the CSV.'));
-    }
-  };
+    return Array.from(names)
+      .map((name) => ({
+        name,
+        delta:
+          (last.categories.find((c) => c.category_name === name)?.total_spent || 0) -
+          (prevBy.get(name) || 0),
+      }))
+      .filter((m) => Math.abs(m.delta) >= 0.01)
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+      .slice(0, 3);
+  }, [pastMonths]);
 
   const selectedLabel = selectedArchive
     ? monthLabel(selectedArchive.year, selectedArchive.month)
     : monthLabel(CURRENT_YEAR, CURRENT_MONTH);
 
+  const fileStamp = selectedArchive
+    ? `${selectedArchive.year}-${String(selectedArchive.month).padStart(2, '0')}`
+    : CURRENT_KEY;
+
+  // ---- Exports -------------------------------------------------------------
+
+  /**
+   * Budget planner export: each category's budget, what was spent against it,
+   * how much of it was used, and whether it went over.
+   */
+  const handleDownloadPlanner = () => {
+    const lines = [
+      'BudgieBudget Budget Planner',
+      `Month,${q(selectedLabel)}`,
+      `Generated,${new Date().toISOString().slice(0, 10)}`,
+      '',
+      'Category,Budgeted,Spent,Remaining,% Used,Status',
+    ];
+
+    breakdown.forEach((c) => {
+      const remaining = c.budgeted - c.spent;
+      const status =
+        c.budgeted <= 0
+          ? 'No budget set'
+          : c.spent > c.budgeted
+          ? `OVER by $${(c.spent - c.budgeted).toFixed(2)}`
+          : `Under by $${remaining.toFixed(2)}`;
+      lines.push(
+        [
+          q(c.category_name),
+          c.budgeted.toFixed(2),
+          c.spent.toFixed(2),
+          remaining.toFixed(2),
+          `${c.percentage.toFixed(1)}%`,
+          q(status),
+        ].join(',')
+      );
+    });
+
+    const overallStatus =
+      totalBudgeted <= 0
+        ? 'No budget set'
+        : totalSpent > totalBudgeted
+        ? `OVER by $${(totalSpent - totalBudgeted).toFixed(2)}`
+        : `Under by $${netSavings.toFixed(2)}`;
+
+    lines.push(
+      '',
+      [
+        q('TOTAL'),
+        totalBudgeted.toFixed(2),
+        totalSpent.toFixed(2),
+        netSavings.toFixed(2),
+        `${totalBudgeted > 0 ? ((totalSpent / totalBudgeted) * 100).toFixed(1) : '0.0'}%`,
+        q(overallStatus),
+      ].join(',')
+    );
+
+    if (overspent.length > 0) {
+      lines.push(
+        '',
+        `Categories over budget,${overspent.length}`,
+        ...overspent.map(
+          (c) => `${q(c.category_name)},over by,${(c.spent - c.budgeted).toFixed(2)}`
+        )
+      );
+    }
+
+    downloadFile(`budgie-budget-planner-${fileStamp}.csv`, lines.join('\n') + '\n', 'text/csv');
+  };
+
+  /** Raw expense lines for the selected month (stored server-side once archived). */
+  const handleDownloadTransactions = async () => {
+    try {
+      if (selectedArchive) {
+        const csv = await getReportCsv(selectedArchive.year, selectedArchive.month);
+        downloadFile(`budgie-expenses-${fileStamp}.csv`, csv, 'text/csv');
+      } else {
+        const header = 'Date,Category,Description,Amount\n';
+        const body = [...transactions]
+          .sort((a, b) => (a.date < b.date ? -1 : 1))
+          .map(
+            (t) =>
+              `${t.date},${q(t.category_name || 'Uncategorised')},${q(t.description || '')},${t.amount.toFixed(2)}`
+          )
+          .join('\n');
+        downloadFile(`budgie-expenses-${fileStamp}.csv`, header + body + '\n', 'text/csv');
+      }
+    } catch (err) {
+      alert(getApiErrorMessage(err, 'Could not download the expense list.'));
+    }
+  };
+
   return (
-    <MainLayout username={username} onLogout={onLogout} onNavigate={onNavigate}>
+    <MainLayout username={username} onLogout={onLogout}>
       <div className="print-area mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
         {/* Header & Controls */}
         <div className="mb-8 flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-3xl font-bold text-gray-900">Financial Report Card</h1>
-          <div className="flex items-center gap-2 print:hidden">
+          <div className="flex flex-wrap items-center gap-2 print:hidden">
             <select
               value={selected}
               onChange={(e) => setSelected(e.target.value)}
               className="rounded border border-gray-300 p-2 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
             >
               <option value="current">{monthLabel(CURRENT_YEAR, CURRENT_MONTH)} (current)</option>
-              {archives.map((a) => (
+              {[...pastMonths].reverse().map((a) => (
                 <option key={`${a.year}-${a.month}`} value={`${a.year}-${a.month}`}>
                   {monthLabel(a.year, a.month)} (archived)
                 </option>
@@ -249,11 +287,20 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
             </select>
             <button
               type="button"
-              onClick={handleDownloadCsv}
+              onClick={handleDownloadPlanner}
+              disabled={breakdown.length === 0}
+              className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+              title="Download your budget, spend and over/under status per category"
+            >
+              Download Budget Planner
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadTransactions}
               disabled={selectedArchive ? !selectedArchive.has_csv : transactions.length === 0}
               className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Download CSV
+              Expenses CSV
             </button>
             <button
               type="button"
@@ -307,6 +354,17 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
                 </p>
               </div>
             </div>
+
+            {overspent.length > 0 && (
+              <div className="mb-8 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                <span className="font-semibold">
+                  {overspent.length} categor{overspent.length === 1 ? 'y is' : 'ies are'} over budget:
+                </span>{' '}
+                {overspent
+                  .map((c) => `${c.category_name} (+$${(c.spent - c.budgeted).toFixed(2)})`)
+                  .join(', ')}
+              </div>
+            )}
 
             {/* Spending distribution pie */}
             <div className="mb-8 rounded-lg border border-gray-100 bg-white p-6 shadow">
@@ -376,11 +434,11 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
                     Simple linear projection for next month:{' '}
                     <span className="font-bold text-gray-900">${trend.prediction.toFixed(2)}</span> total spending.
                   </p>
-                  {trend.movers.length > 0 && (
+                  {movers.length > 0 && (
                     <div>
                       <p className="mb-1 font-medium text-gray-800">Biggest movers last month:</p>
                       <ul className="space-y-1">
-                        {trend.movers.map((m) => (
+                        {movers.map((m) => (
                           <li key={m.name} className="flex items-center gap-2">
                             <span className={m.delta > 0 ? 'text-red-600' : 'text-green-600'}>
                               {m.delta > 0 ? '▲' : '▼'}
@@ -403,35 +461,46 @@ const Reports: React.FC<ReportsProps> = ({ username, onLogout, onNavigate }) => 
               <h2 className="mb-4 text-xl font-semibold text-gray-900">Category Breakdown</h2>
               {breakdown.length > 0 ? (
                 <div className="space-y-4">
-                  {breakdown.map((category) => (
-                    <div key={category.category_name} className="rounded-lg border border-gray-200 p-4">
-                      <div className="mb-2 flex items-center justify-between">
-                        <h3 className="font-semibold text-gray-900">{category.category_name}</h3>
-                        <span className="text-sm text-gray-600">
-                          ${category.spent.toFixed(2)} of ${category.budgeted.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="relative">
-                        <div className="h-3 w-full overflow-hidden rounded-full bg-gray-200">
-                          <div
-                            className={`h-full transition-all ${
-                              category.percentage < 50
-                                ? 'bg-green-500'
-                                : category.percentage < 85
-                                ? 'bg-yellow-400'
-                                : category.percentage < 100
-                                ? 'bg-orange-500'
-                                : 'bg-red-500'
-                            }`}
-                            style={{ width: `${Math.min(100, category.percentage)}%` }}
-                          />
+                  {breakdown.map((category) => {
+                    const isOver = category.budgeted > 0 && category.spent > category.budgeted;
+                    return (
+                      <div
+                        key={category.category_name}
+                        className={`rounded-lg border p-4 ${
+                          isOver ? 'border-red-300 bg-red-50/40' : 'border-gray-200'
+                        }`}
+                      >
+                        <div className="mb-2 flex items-center justify-between">
+                          <h3 className="font-semibold text-gray-900">{category.category_name}</h3>
+                          <span className="text-sm text-gray-600">
+                            ${category.spent.toFixed(2)} of ${category.budgeted.toFixed(2)}
+                          </span>
                         </div>
-                        <p className="mt-1 text-right text-xs text-gray-500">
-                          {category.percentage.toFixed(1)}% used
-                        </p>
+                        <div className="relative">
+                          <div className="h-3 w-full overflow-hidden rounded-full bg-gray-200">
+                            <div
+                              className={`h-full transition-all ${
+                                category.percentage < 50
+                                  ? 'bg-green-500'
+                                  : category.percentage < 85
+                                  ? 'bg-yellow-400'
+                                  : category.percentage < 100
+                                  ? 'bg-orange-500'
+                                  : 'bg-red-500'
+                              }`}
+                              style={{ width: `${Math.min(100, category.percentage)}%` }}
+                            />
+                          </div>
+                          <p className="mt-1 text-right text-xs">
+                            <span className={isOver ? 'font-semibold text-red-600' : 'text-gray-500'}>
+                              {category.percentage.toFixed(1)}% used
+                              {isOver && ` — over by $${(category.spent - category.budgeted).toFixed(2)}`}
+                            </span>
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="py-8 text-center text-sm text-gray-500">

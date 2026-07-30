@@ -124,6 +124,36 @@ const findColumn = (header: string[], needles: string[]): number =>
   header.findIndex((h) => needles.some((n) => h.includes(n)));
 
 /**
+ * Every column that can carry payee text. Banks split it across several
+ * ("Details" holding the masked card while "Code" holds the store name), so
+ * all of them are collected and composed rather than taking the first hit.
+ */
+const DESCRIPTION_NEEDLES = [
+  'description',
+  'narrative',
+  'details',
+  'particulars',
+  'code',
+  'reference',
+  'payee',
+  'merchant',
+  'memo',
+  'transaction',
+];
+
+const findDescriptionColumns = (header: string[], exclude: number[]): number[] =>
+  header
+    .map((h, i) => ({ h, i }))
+    .filter(
+      ({ h, i }) =>
+        !exclude.includes(i) &&
+        // "postcode" would otherwise match the "code" needle
+        !h.includes('postcode') &&
+        DESCRIPTION_NEEDLES.some((n) => h.includes(n))
+    )
+    .map(({ i }) => i);
+
+/**
  * Parse a bank CSV. Understands either a signed Amount column (negative =
  * money out) or separate Debit/Credit columns. Headerless CSVs are handled
  * by assuming date,description,amount order.
@@ -143,7 +173,7 @@ export const parseCsvStatement = (text: string): ParsedStatement => {
   );
 
   let dateIdx = 0;
-  let descIdx = 1;
+  let descIdxs = [1];
   let amountIdx = 2;
   let debitIdx = -1;
   let creditIdx = -1;
@@ -152,11 +182,12 @@ export const parseCsvStatement = (text: string): ParsedStatement => {
   if (hasHeader) {
     dataRows = rows.slice(1);
     dateIdx = findColumn(headerRaw, ['date']);
-    descIdx = findColumn(headerRaw, ['description', 'narrative', 'details', 'transaction', 'payee', 'memo']);
     amountIdx = findColumn(headerRaw, ['amount']);
     debitIdx = findColumn(headerRaw, ['debit', 'withdrawal', 'money out']);
     creditIdx = findColumn(headerRaw, ['credit', 'deposit', 'money in']);
-    if (dateIdx === -1 || descIdx === -1 || (amountIdx === -1 && debitIdx === -1 && creditIdx === -1)) {
+    // Numeric columns must never be mistaken for payee text
+    descIdxs = findDescriptionColumns(headerRaw, [dateIdx, amountIdx, debitIdx, creditIdx]);
+    if (dateIdx === -1 || descIdxs.length === 0 || (amountIdx === -1 && debitIdx === -1 && creditIdx === -1)) {
       return {
         lines: [],
         warnings: ['Could not find Date, Description and Amount (or Debit/Credit) columns in the CSV header.'],
@@ -169,11 +200,12 @@ export const parseCsvStatement = (text: string): ParsedStatement => {
 
   for (const row of dataRows) {
     const date = normaliseDate(row[dateIdx] || '');
-    const description = (row[descIdx] || '').trim();
-    if (!date || !description) {
+    const rawFields = descIdxs.map((i) => (row[i] || '').trim());
+    if (!date || rawFields.every((f) => !f)) {
       skipped++;
       continue;
     }
+    const description = composeDescription(rawFields);
 
     let amount: number | null = null;
     if (debitIdx !== -1 || creditIdx !== -1) {
@@ -305,6 +337,87 @@ export const parsePdfStatement = async (file: File): Promise<ParsedStatement> =>
 // Grouping & income-stream detection
 // ---------------------------------------------------------------------------
 
+/**
+ * Human-readable version of a statement reference: drops the noise banks pad
+ * descriptions with — masked card numbers ("4835 ******", "XXXX1234"), bare
+ * digit runs, receipt/terminal refs — so the review UI only ever shows words.
+ *
+ * References made entirely of digits and masks carry no readable name, so they
+ * become a generic placeholder rather than raw numbers; the review screen lets
+ * the user rename them to whatever the payment actually was.
+ */
+export const readableText = (value: string): string =>
+  value
+    .replace(/[_|]+/g, ' ')
+    .split(/\s+/)
+    .filter((token) => {
+      const t = token.trim();
+      if (!t) return false;
+      // Masked card fragments: ****, ••••, xxxx1234, ####
+      if (/^[x*•#·]+[\d]*$/i.test(t)) return false;
+      // Anything carrying no letters at all (digits, dates, refs, symbols)
+      if (!/[a-z]/i.test(t)) return false;
+      return true;
+    })
+    // Strip digits/masks still glued onto a word, e.g. "WOOLWORTHS1234"
+    .map((t) => t.replace(/[\d*•#]{3,}$/, '').trim())
+    .filter((t) => t.length > 0)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/** Placeholder for a reference that carries no readable name at all. */
+const genericLabel = (raw: string) =>
+  /[*•#]|x{2,}/i.test(raw) ? 'Card payment' : 'Bank reference';
+
+const letterCount = (s: string) => (s.match(/[a-z]/gi) || []).length;
+
+/** Does this field contain a masked card number? */
+const hasCardMask = (value: string) =>
+  /[*•#]{3,}/.test(value) || /x{3,}\s*\d/i.test(value) || /\d{4}[-\s]?[*•#x]{2,}/i.test(value);
+
+/**
+ * Text left over after a masked card number, when only a letter or two long,
+ * is a statement suffix (e.g. the trailing "Df" on "4835-****-****-1489 Df")
+ * rather than a payee — so it is dropped instead of becoming the name.
+ */
+const isMaskRemnant = (field: string, readable: string) =>
+  hasCardMask(field) && letterCount(readable) < 3;
+
+export const displayReference = (description: string): string =>
+  readableText(description) || genericLabel(description);
+
+/**
+ * Build one description from every descriptive column of a statement row.
+ *
+ * Banks scatter the merchant name across Details/Particulars/Code/Reference,
+ * and the first of those is often just the masked card ("4835-****-****-1489"),
+ * so picking a single column loses the payee. The field carrying the most
+ * letters leads; other fields are appended only when they add a real word,
+ * which keeps trailing junk like a stray "Df" out of the name.
+ */
+export const composeDescription = (fields: string[]): string => {
+  const readable = fields
+    .map((f) => ({ field: f || '', text: readableText(f || '') }))
+    .filter(({ field, text }) => text.length > 0 && !isMaskRemnant(field, text))
+    .map(({ text }) => text)
+    .sort((a, b) => letterCount(b) - letterCount(a));
+
+  if (readable.length === 0) {
+    return genericLabel(fields.join(' '));
+  }
+
+  const parts = [readable[0]];
+  for (const field of readable.slice(1)) {
+    if (letterCount(field) < 3) continue;
+    const seen = parts.join(' ').toLowerCase();
+    if (seen.includes(field.toLowerCase())) continue;
+    parts.push(field);
+  }
+
+  return parts.join(' ').trim();
+};
+
 /** Normalise a statement reference for grouping (strip refs/dates/amounts). */
 export const groupKey = (description: string): string =>
   description
@@ -321,14 +434,15 @@ export const groupLines = (lines: StatementLine[]): StatementGroup[] => {
   const groups = new Map<string, StatementGroup>();
   for (const line of lines) {
     const key = groupKey(line.description) || line.description.toUpperCase();
+    const label = displayReference(line.description);
     if (!groups.has(key)) {
-      groups.set(key, { key, name: line.description, lines: [], total: 0 });
+      groups.set(key, { key, name: label, lines: [], total: 0 });
     }
     const g = groups.get(key)!;
     g.lines.push(line);
     g.total += line.amount;
-    // Prefer the shortest raw description as the display/reference name
-    if (line.description.length < g.name.length) g.name = line.description;
+    // Prefer the shortest cleaned description as the display/reference name
+    if (label.length < g.name.length) g.name = label;
   }
   return Array.from(groups.values()).sort((a, b) => b.total - a.total);
 };
